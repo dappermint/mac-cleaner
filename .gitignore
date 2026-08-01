@@ -1,0 +1,5 @@
+result
+result-*
+/mac-cleaner
+.direnv/
+.DS_Store
