@@ -74,6 +74,10 @@ just surface      # run the accounting against your own disk
 just nix-check    # every flake output evaluates and builds
 ```
 
+## licence
+
+GPL-3.0-only. See [LICENSE](LICENSE).
+
 ## notes
 
 Sizes are allocated blocks, not apparent file length, so sparse files do not show up as fake wins. The walk stops at device boundaries, so a nested volume never inflates the directory it appears under. Hard-linked files are counted once.

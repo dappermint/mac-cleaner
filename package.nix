@@ -1,7 +1,7 @@
 {
   lib,
   buildGoModule,
-  version ? "0.1.0",
+  version ? "0.88.0",
 }:
 
 buildGoModule {
@@ -23,6 +23,8 @@ buildGoModule {
 
   meta = {
     description = "Whole-surface macOS storage accounting and cleanup TUI";
+    homepage = "https://github.com/dappermint/mac-cleaner";
+    license = lib.licenses.gpl3Only;
     mainProgram = "mac-cleaner";
     platforms = lib.platforms.darwin;
   };
