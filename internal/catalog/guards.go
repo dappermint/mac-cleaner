@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dappermint/ratatouille/internal/plist"
 	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
@@ -64,6 +65,48 @@ func NotDataProtected() Guard {
 			}
 			if safety.ProtectedBundle(bundle) {
 				return false, bundle + " is a system component"
+			}
+			return true, ""
+		},
+	}
+}
+
+// AppAbsent offers a path only when it can be positively tied to an application
+// that is no longer installed.
+//
+// The word positively is the whole guard. An earlier version fell back to the
+// directory's own name when it held no bundle id, and then treated "no
+// installed app is called that" as proof the owner had been uninstalled. That
+// is absence of evidence read as evidence of absence, with a delete on the end
+// of it, and on a real machine it offered up ~/Library/Application
+// Support/CloudDocs, which is iCloud Drive's local data, along with
+// FileProvider and a row of vendor directories belonging to installed apps.
+//
+// So the only accepted evidence is a reverse-DNS bundle id in the path. A bare
+// vendor or product directory is never enough, no matter how abandoned it
+// looks. This finds fewer leftovers, which is the correct trade.
+func AppAbsent() Guard {
+	return Guard{
+		Name: "the owning app is no longer installed",
+		Allow: func(_ context.Context, env Env, path string) (bool, string) {
+			if len(env.Installed) == 0 {
+				return false, "the installed application index is empty, so nothing can be proven absent"
+			}
+			bundle := BundleFromPath(path)
+			if bundle == "" {
+				return false, "not named for a bundle id, so nothing ties it to an application"
+			}
+			if !strings.HasPrefix(bundle, "com.") && !strings.HasPrefix(bundle, "org.") &&
+				!strings.HasPrefix(bundle, "net.") && !strings.HasPrefix(bundle, "io.") &&
+				!strings.HasPrefix(bundle, "dev.") && !strings.HasPrefix(bundle, "app.") &&
+				!strings.HasPrefix(bundle, "ai.") && !strings.HasPrefix(bundle, "co.") {
+				return false, bundle + " does not look like a bundle id"
+			}
+			if safety.ProtectedBundle(bundle) {
+				return false, bundle + " is a system component"
+			}
+			if env.AppPresent(bundle) {
+				return false, bundle + " is still installed"
 			}
 			return true, ""
 		},
@@ -170,6 +213,44 @@ func BundleFromContainer(path string) string {
 		}
 	}
 	return ""
+}
+
+// ReadInstalled indexes every installed application by bundle id and by display
+// name, both lowercased. It is read once per scan, because the leftovers group
+// asks about it for every candidate path.
+func ReadInstalled(home string) map[string]bool {
+	installed := make(map[string]bool)
+	roots := []string{
+		"/Applications",
+		"/Applications/Utilities",
+		filepath.Join(home, "Applications"),
+		"/System/Applications",
+		"/System/Applications/Utilities",
+	}
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if filepath.Ext(entry.Name()) != ".app" {
+				continue
+			}
+			name := strings.TrimSuffix(entry.Name(), ".app")
+			installed[strings.ToLower(name)] = true
+			dict, err := plist.ReadFile(filepath.Join(root, entry.Name(), "Contents", "Info.plist"))
+			if err != nil {
+				continue
+			}
+			if bundle, ok := dict.String("CFBundleIdentifier"); ok && bundle != "" {
+				installed[strings.ToLower(bundle)] = true
+				// A helper keeps its parent alive: com.example.app.helper must
+				// not read as abandoned just because no .app is named that.
+				installed[strings.ToLower(bundle)+".helper"] = true
+			}
+		}
+	}
+	return installed
 }
 
 // ReadProcesses builds the process name set once per scan.

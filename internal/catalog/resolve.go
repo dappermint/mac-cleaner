@@ -141,6 +141,7 @@ func NewEnv(ctx context.Context, home string, rootful bool, identity *storage.Co
 		Identity:  identity,
 		Whitelist: whitelist,
 		Processes: ReadProcesses(ctx),
+		Installed: ReadInstalled(filepath.Clean(home)),
 		Now:       time.Now(),
 	}
 }

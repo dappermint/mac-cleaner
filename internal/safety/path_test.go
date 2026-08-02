@@ -127,3 +127,27 @@ func TestProtectedPathsAreRefusedWithTheirReason(t *testing.T) {
 		t.Errorf("the refusal did not name the protected root: %v", err)
 	}
 }
+
+// The drift audit is the only thing that notices a new macOS release adding a
+// system app, because the runtime com.apple.* blanket would cover it silently.
+func TestProtectionTableCoversThisMachine(t *testing.T) {
+	missing, checked := AuditSystemBundles()
+	if checked == 0 {
+		t.Skip("no system applications on this machine")
+	}
+	if len(missing) > 0 {
+		t.Errorf("the protection table has drifted:\n%s", AuditReport(missing, checked))
+	}
+}
+
+func TestAuditReportSaysWhatToDo(t *testing.T) {
+	report := AuditReport([]string{"com.apple.NewThing"}, 200)
+	for _, want := range []string{"com.apple.NewThing", "protection.txt", "case sensitive"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("the report does not mention %q: %s", want, report)
+		}
+	}
+	if clean := AuditReport(nil, 200); !strings.Contains(clean, "all named") {
+		t.Errorf("a clean audit reads oddly: %s", clean)
+	}
+}

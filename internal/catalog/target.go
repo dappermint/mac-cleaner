@@ -92,6 +92,22 @@ type Env struct {
 	Whitelist *config.Whitelist
 	Processes map[string]bool
 	Now       time.Time
+
+	// Installed is every bundle id and app name currently on the machine. The
+	// leftovers group needs to know what is gone, and the only way to know that
+	// is to know what is still here.
+	Installed map[string]bool
+}
+
+// AppPresent reports whether an app with this bundle id or display name is
+// still installed. An empty index means the scan never built one, in which case
+// nothing is treated as absent, because guessing wrong here removes the data of
+// a working app.
+func (e Env) AppPresent(name string) bool {
+	if len(e.Installed) == 0 {
+		return true
+	}
+	return e.Installed[strings.ToLower(name)]
 }
 
 func (e Env) Running(name string) bool {

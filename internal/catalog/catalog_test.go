@@ -350,3 +350,192 @@ func TestBundleFromContainer(t *testing.T) {
 		}
 	}
 }
+
+// AppAbsent decides that an application no longer exists, and then something
+// removes its data on the strength of that. An empty index means the scan could
+// not tell, which must never read as "it is gone".
+func TestAppAbsentRefusesWhenItCannotTell(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "Library", "Caches", "com.example.app", "blob"), 4096)
+
+	target := Target{
+		ID: "leftovers", Name: "leftovers", Group: GroupLeftovers,
+		Category: storage.CategorySystemData, Risk: RiskReview, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Glob("Library/Caches/*")}, Guards: []Guard{AppAbsent()},
+		Evidence: "fixture", NotTargets: []string{"fixture"},
+	}
+
+	env := testEnv(t, home)
+	env.Installed = nil
+	candidates := Resolve(context.Background(), env, []Target{target}, Options{})
+	if len(candidates[0].Paths()) != 0 {
+		t.Fatal("an empty installed index allowed a removal")
+	}
+	if len(candidates[0].Skipped) == 0 || !strings.Contains(candidates[0].Skipped[0].Reason, "empty") {
+		t.Errorf("the refusal was not explained: %+v", candidates[0].Skipped)
+	}
+}
+
+func TestAppAbsentKeepsInstalledAppsData(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "Library", "Caches", "com.example.app", "blob"), 4096)
+	write(t, filepath.Join(home, "Library", "Caches", "com.gone.app", "blob"), 4096)
+
+	target := Target{
+		ID: "leftovers", Name: "leftovers", Group: GroupLeftovers,
+		Category: storage.CategorySystemData, Risk: RiskReview, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Glob("Library/Caches/*")}, Guards: []Guard{AppAbsent()},
+		Evidence: "fixture", NotTargets: []string{"fixture"},
+	}
+
+	env := testEnv(t, home)
+	env.Installed = map[string]bool{"com.example.app": true}
+	candidates := Resolve(context.Background(), env, []Target{target}, Options{})
+
+	paths := candidates[0].Paths()
+	if len(paths) != 1 {
+		t.Fatalf("got %v, want only the abandoned one", paths)
+	}
+	if filepath.Base(paths[0]) != "com.gone.app" {
+		t.Errorf("kept the wrong path: %s", paths[0])
+	}
+	for _, skip := range candidates[0].Skipped {
+		if strings.Contains(skip.Path, "com.example.app") && !strings.Contains(skip.Reason, "still installed") {
+			t.Errorf("an installed app's data was skipped for the wrong reason: %+v", skip)
+		}
+	}
+}
+
+// A helper bundle keeps its parent alive, so com.example.app.helper must not
+// read as abandoned merely because no .app is named that.
+func TestAppPresentCountsHelpers(t *testing.T) {
+	env := Env{Installed: map[string]bool{"com.example.app": true, "com.example.app.helper": true}}
+	if !env.AppPresent("com.example.app.helper") {
+		t.Error("a helper of an installed app read as absent")
+	}
+	if env.AppPresent("com.other.app") {
+		t.Error("an unrelated bundle read as present")
+	}
+}
+
+// Root-only targets have to be visible without root so the interface can say
+// what sudo would add, but never selectable.
+func TestSystemTargetsNeedRoot(t *testing.T) {
+	var systemTargets int
+	for _, target := range All() {
+		if target.Group != GroupSystem {
+			continue
+		}
+		systemTargets++
+		var guarded bool
+		for _, guard := range target.Guards {
+			if strings.Contains(guard.Name, "--root") {
+				guarded = true
+			}
+		}
+		if !guarded {
+			t.Errorf("%s is in the system group but does not require root", target.ID)
+		}
+		ok, reason := target.Allows(context.Background(), Env{Home: "/Users/someone"}, "/Library/Caches/example")
+		if ok {
+			t.Errorf("%s was allowed without root", target.ID)
+		}
+		if !strings.Contains(reason, "root") {
+			t.Errorf("%s refused for the wrong reason: %s", target.ID, reason)
+		}
+	}
+	if systemTargets == 0 {
+		t.Fatal("no system targets exist")
+	}
+}
+
+func TestLeftoverTargetsAllGuardOnAbsence(t *testing.T) {
+	found := 0
+	for _, target := range All() {
+		if target.Group != GroupLeftovers {
+			continue
+		}
+		found++
+		var guarded bool
+		for _, guard := range target.Guards {
+			if strings.Contains(guard.Name, "no longer installed") {
+				guarded = true
+			}
+		}
+		if !guarded {
+			t.Errorf("%s removes leftovers without checking the app is gone", target.ID)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no leftover targets exist")
+	}
+}
+
+// These are the real directory names that a first version of AppAbsent offered
+// for deletion on a live machine. CloudDocs is iCloud Drive's local data and
+// FileProvider is system state; the rest belong to installed applications whose
+// display name differs from their directory. None of them is named for a bundle
+// id, and that is exactly why none of them may ever qualify.
+func TestLeftoversNeverMatchBareVendorDirectories(t *testing.T) {
+	home := t.TempDir()
+	dangerous := []string{
+		"CloudDocs", "FileProvider", "Claude", "Perplexity", "Razer",
+		"Paradox Interactive", "Google", "Steam", "discordptb", "Firefox",
+		"MobileSync", "CrashReporter", "Microsoft", "Adobe",
+	}
+	for _, name := range dangerous {
+		write(t, filepath.Join(home, "Library", "Application Support", name, "blob"), 4096)
+	}
+	write(t, filepath.Join(home, "Library", "Application Support", "com.gone.app", "blob"), 4096)
+
+	target := Target{
+		ID: "leftovers", Name: "leftovers", Group: GroupLeftovers,
+		Category: storage.CategorySystemData, Risk: RiskReview, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Glob("Library/Application Support/*")}, Guards: []Guard{AppAbsent()},
+		Evidence: "fixture", NotTargets: []string{"fixture"},
+	}
+
+	env := testEnv(t, home)
+	env.Installed = map[string]bool{"com.example.app": true}
+	candidates := Resolve(context.Background(), env, []Target{target}, Options{})
+
+	for _, path := range candidates[0].Paths() {
+		base := filepath.Base(path)
+		for _, name := range dangerous {
+			if base == name {
+				t.Errorf("offered %q for deletion, which is not named for any bundle id", name)
+			}
+		}
+	}
+	// The one directory that is named for an absent bundle id still qualifies,
+	// or the guard would be refusing everything rather than refusing correctly.
+	found := false
+	for _, path := range candidates[0].Paths() {
+		if filepath.Base(path) == "com.gone.app" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a genuinely abandoned bundle-id directory was not offered")
+	}
+}
+
+// A system bundle is never a leftover, whatever the installed index says.
+func TestLeftoversSkipSystemBundles(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, "Library", "Caches", "com.apple.Something", "blob"), 4096)
+
+	target := Target{
+		ID: "leftovers", Name: "leftovers", Group: GroupLeftovers,
+		Category: storage.CategorySystemData, Risk: RiskReview, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Glob("Library/Caches/*")}, Guards: []Guard{AppAbsent()},
+		Evidence: "fixture", NotTargets: []string{"fixture"},
+	}
+	env := testEnv(t, home)
+	env.Installed = map[string]bool{"com.example.app": true}
+
+	candidates := Resolve(context.Background(), env, []Target{target}, Options{})
+	if len(candidates[0].Paths()) != 0 {
+		t.Errorf("an Apple bundle was offered as a leftover: %v", candidates[0].Paths())
+	}
+}

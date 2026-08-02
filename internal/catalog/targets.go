@@ -29,9 +29,183 @@ var All = sync.OnceValue(func() []Target {
 	targets = append(targets, browsers()...)
 	targets = append(targets, cloudAndOffice()...)
 	targets = append(targets, developerTools()...)
+	targets = append(targets, virtualization()...)
 	targets = append(targets, deviceBackups()...)
+	targets = append(targets, leftovers()...)
+	targets = append(targets, system()...)
 	return targets
 })
+
+// leftovers are the directories an uninstalled app left behind. Every target
+// here is guarded by AppAbsent, which refuses outright when the installed index
+// could not be built, because "I could not tell" must never read as "it is
+// gone".
+func leftovers() []Target {
+	shared := []string{
+		"anything whose owning app is still installed, which is that app's business",
+		"any path whose bundle id is in the data-protected table",
+		"anything at all when the installed application index came back empty",
+	}
+	place := func(id, name, pattern, detail string) Target {
+		return Target{
+			ID:            id,
+			Name:          name,
+			Group:         GroupLeftovers,
+			Category:      storage.CategorySystemData,
+			Risk:          RiskReview,
+			Recovery:      safety.RecoveryTrash,
+			Detail:        detail,
+			Paths:         []PathSpec{Glob(pattern)},
+			Guards:        []Guard{AppAbsent(), NotDataProtected(), OwnedByUser()},
+			MinBytes:      8 * mib,
+			Split:         true,
+			SplitMinBytes: 64 * mib,
+			Evidence:      "the directory is named for a bundle id or app that is no longer installed anywhere this tool looks",
+			Measured:      unmeasured,
+			NotTargets:    shared,
+		}
+	}
+	return []Target{
+		place("orphaned-app-support", "orphaned application support",
+			"Library/Application Support/*", "state belonging to an app that is gone"),
+		place("orphaned-caches", "orphaned caches",
+			"Library/Caches/*", "caches belonging to an app that is gone"),
+		place("orphaned-containers", "orphaned containers",
+			"Library/Containers/*", "sandbox containers belonging to an app that is gone"),
+		place("orphaned-saved-state", "orphaned window state",
+			"Library/Saved Application State/*.savedState", "window state belonging to an app that is gone"),
+		place("orphaned-http-storage", "orphaned web storage",
+			"Library/HTTPStorages/*", "cookies and local storage belonging to an app that is gone"),
+	}
+}
+
+// system targets need uid 0. They are offered rather than hidden without it, so
+// the interface can say what running as root would add.
+func system() []Target {
+	return []Target{
+		{
+			ID:            "system-caches",
+			Name:          "system caches",
+			Group:         GroupSystem,
+			Category:      storage.CategorySystemData,
+			Risk:          RiskSafe,
+			Recovery:      safety.RecoveryTrash,
+			Detail:        "machine-wide caches, rebuilt on demand",
+			Paths:         []PathSpec{Glob("/Library/Caches/*")},
+			Guards:        []Guard{NeedsRoot(), NotDataProtected()},
+			MinBytes:      32 * mib,
+			Split:         true,
+			SplitMinBytes: 128 * mib,
+			Evidence:      "the machine-wide equivalent of the per-user cache directory, reserved for rebuildable data",
+			Measured:      unmeasured,
+			NotTargets: []string{
+				"/Library/Caches/com.apple.* entries, which the fast protection table blankets",
+				"/System/Library/Caches, which is on the sealed volume",
+			},
+		},
+		{
+			ID:       "system-logs",
+			Name:     "system logs",
+			Group:    GroupSystem,
+			Category: storage.CategorySystemData,
+			Risk:     RiskSafe,
+			Recovery: safety.RecoveryTrash,
+			Detail:   "rotated system logs, already superseded",
+			Paths: []PathSpec{
+				Glob("/private/var/log/*.gz"),
+				Glob("/private/var/log/*.[0-9]"),
+				Glob("/private/var/log/*.old"),
+			},
+			Guards:   []Guard{NeedsRoot(), OlderThan(14 * 24 * time.Hour)},
+			MinBytes: 8 * mib,
+			Evidence: "a numeric, .gz or .old suffix is what newsyslog appends when it rotates a log it has finished with",
+			Measured: unmeasured,
+			NotTargets: []string{
+				"the live log each rotated file came from, which has no suffix",
+				"/private/var/db/diagnostics, which is the unified log store",
+			},
+		},
+		{
+			ID:            "system-diagnostic-reports",
+			Name:          "diagnostic reports",
+			Group:         GroupSystem,
+			Category:      storage.CategorySystemData,
+			Risk:          RiskReview,
+			Recovery:      safety.RecoveryTrash,
+			Detail:        "crash and panic reports older than 90 days",
+			Paths:         []PathSpec{Glob("/Library/Logs/DiagnosticReports/*")},
+			Guards:        []Guard{NeedsRoot(), OlderThan(90 * 24 * time.Hour)},
+			MinBytes:      8 * mib,
+			Split:         true,
+			SplitMinBytes: 64 * mib,
+			Evidence:      "each entry is one dated report and nothing reads them but a human diagnosing a fault",
+			Measured:      unmeasured,
+			NotTargets: []string{
+				"anything under 90 days old, because a recent crash report is the evidence for a fault still being investigated",
+				"the per-user DiagnosticReports directory, which the user-logs target already excludes by name",
+			},
+		},
+		{
+			ID:       "system-icon-cache",
+			Name:     "icon services cache",
+			Group:    GroupSystem,
+			Category: storage.CategorySystemData,
+			Risk:     RiskSafe,
+			Recovery: safety.RecoveryTrash,
+			Detail:   "the machine-wide icon cache, rebuilt on demand",
+			Paths:    []PathSpec{Home("/Library/Caches/com.apple.iconservices.store")},
+			Guards:   []Guard{NeedsRoot()},
+			MinBytes: 8 * mib,
+			Evidence: "an Apple-owned cache whose whole contents are regenerated from application bundles",
+			Measured: unmeasured,
+		},
+	}
+}
+
+// virtualization images are large, slow to rebuild and often the only copy, so
+// nothing here is ever safe tier.
+func virtualization() []Target {
+	return []Target{
+		{
+			ID:            "container-images",
+			Name:          "container image caches",
+			Group:         GroupVirtualization,
+			Category:      storage.CategoryDeveloper,
+			Risk:          RiskReview,
+			Recovery:      safety.RecoveryTrash,
+			Detail:        "pulled image layers, refetched from the registry",
+			Paths:         []PathSpec{Home(".orbstack/log"), Home("Library/Caches/colima"), Home(".lima/_images")},
+			Guards:        []Guard{ProcessNotRunning("OrbStack", "colima", "limactl"), OwnedByUser()},
+			MinBytes:      256 * mib,
+			Split:         true,
+			SplitMinBytes: 512 * mib,
+			Evidence:      "image layers and logs a container runtime repopulates from its registry",
+			Measured:      unmeasured,
+			NotTargets: []string{
+				"the virtual machine disk images themselves, which hold anything written inside the machine",
+				"docker's own storage, which the docker system prune action owns",
+			},
+		},
+		{
+			ID:       "simulator-runtimes",
+			Name:     "unused simulator runtimes",
+			Group:    GroupVirtualization,
+			Category: storage.CategoryDeveloper,
+			Risk:     RiskReview,
+			Recovery: safety.RecoveryTrash,
+			Detail:   "downloaded simulator runtimes, refetched from Apple",
+			Paths:    []PathSpec{Glob("Library/Developer/CoreSimulator/Volumes/*")},
+			Guards:   []Guard{ProcessNotRunning("Simulator", "Xcode", "simdiskimaged"), OwnedByUser()},
+			MinBytes: 512 * mib,
+			Evidence: "each entry is a mounted runtime image Xcode re-downloads on demand",
+			Measured: unmeasured,
+			NotTargets: []string{
+				"CoreSimulator/Devices, which holds the simulators' installed apps and data",
+				"any runtime currently in use, which is why the Simulator process guard is there",
+			},
+		},
+	}
+}
 
 func userEssentials() []Target {
 	return []Target{
