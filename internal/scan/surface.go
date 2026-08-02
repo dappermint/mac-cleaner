@@ -24,6 +24,8 @@ const (
 	surfaceDisplayNodes = 4000
 	surfaceFanOutDepth  = 2
 	surfaceKeepFloor    = 4 * 1024 * 1024
+
+	defaultLargeFileLimit = 200
 )
 
 func keepFraction(depth int) int64 {
@@ -64,6 +66,14 @@ type SurfaceNode struct {
 	Children []*SurfaceNode   `json:"children,omitempty"`
 }
 
+// LargeFile is one file worth naming on its own. The walk already stats every
+// file, so collecting these costs a comparison rather than a second pass.
+type LargeFile struct {
+	Path     string    `json:"path"`
+	Bytes    int64     `json:"bytes"`
+	Modified time.Time `json:"modified,omitempty"`
+}
+
 type Fault struct {
 	Path     string `json:"path"`
 	Reason   string `json:"reason"`
@@ -87,6 +97,13 @@ type Surface struct {
 	Faults     []Fault                 `json:"faults,omitempty"`
 	Elapsed    time.Duration           `json:"elapsed_ns"`
 	Issues     []string                `json:"issues,omitempty"`
+	LargeFiles []LargeFile             `json:"large_files,omitempty"`
+
+	// Scoped is set when the walk covered one path rather than the whole data
+	// volume. A scoped walk has no APFS claim to reconcile against, so Claimed
+	// stays zero and the coverage signals do not apply.
+	Scoped    bool   `json:"scoped,omitempty"`
+	ScopeRoot string `json:"scope_root,omitempty"`
 }
 
 func (n *SurfaceNode) Total() int64 {
@@ -107,8 +124,14 @@ type surfaceWalker struct {
 	hardware atomic.Int64
 	mutex    sync.Mutex
 	hardlink map[storage.InodeKey]struct{}
-	visited  map[uint64]struct{}
+	visited  map[storage.InodeKey]struct{}
 	faults   []Fault
+
+	cross      bool
+	minFile    int64
+	fileLimit  int
+	fileMutex  sync.Mutex
+	largeFiles []LargeFile
 }
 
 func newSurfaceWalker(ctx context.Context, device uint64, home string) *surfaceWalker {
@@ -117,8 +140,49 @@ func newSurfaceWalker(ctx context.Context, device uint64, home string) *surfaceW
 		device:   device,
 		home:     home,
 		hardlink: make(map[storage.InodeKey]struct{}),
-		visited:  make(map[uint64]struct{}),
+		visited:  make(map[storage.InodeKey]struct{}),
 	}
+}
+
+// considerFile keeps the largest files seen so far. The slice is allowed to
+// grow to a small multiple of the limit before it is trimmed, so the common
+// case is an append under a lock rather than a sort.
+func (w *surfaceWalker) considerFile(path string, blocks int64, modified time.Time) {
+	if w.minFile <= 0 || blocks < w.minFile {
+		return
+	}
+	w.fileMutex.Lock()
+	defer w.fileMutex.Unlock()
+	w.largeFiles = append(w.largeFiles, LargeFile{Path: path, Bytes: blocks, Modified: modified})
+	if len(w.largeFiles) > w.fileCap()*4 {
+		w.trimFiles()
+	}
+}
+
+func (w *surfaceWalker) fileCap() int {
+	if w.fileLimit > 0 {
+		return w.fileLimit
+	}
+	return defaultLargeFileLimit
+}
+
+func (w *surfaceWalker) trimFiles() {
+	sort.SliceStable(w.largeFiles, func(a, b int) bool {
+		if w.largeFiles[a].Bytes != w.largeFiles[b].Bytes {
+			return w.largeFiles[a].Bytes > w.largeFiles[b].Bytes
+		}
+		return w.largeFiles[a].Path < w.largeFiles[b].Path
+	})
+	if len(w.largeFiles) > w.fileCap() {
+		w.largeFiles = w.largeFiles[:w.fileCap()]
+	}
+}
+
+func (w *surfaceWalker) LargeFiles() []LargeFile {
+	w.fileMutex.Lock()
+	defer w.fileMutex.Unlock()
+	w.trimFiles()
+	return append([]LargeFile(nil), w.largeFiles...)
 }
 
 func (w *surfaceWalker) Progress() (files, bytes int64) {
@@ -198,9 +262,10 @@ func (w *surfaceWalker) walkDirectory(path string, own int64, depth int) *Surfac
 			}
 			loose += blocks
 			files++
+			w.considerFile(childPath, blocks, info.ModTime())
 			continue
 		}
-		if storage.DeviceID(stat) != w.device {
+		if !w.cross && storage.DeviceID(stat) != w.device {
 			mutex.Lock()
 			children = append(children, &SurfaceNode{
 				Name:   entry.Name(),
@@ -293,9 +358,10 @@ func (w *surfaceWalker) measureQuiet(path string, own int64) int64 {
 			total += blocks
 			local += blocks
 			files++
+			w.considerFile(childPath, blocks, info.ModTime())
 			continue
 		}
-		if storage.DeviceID(stat) != w.device {
+		if !w.cross && storage.DeviceID(stat) != w.device {
 			continue
 		}
 		if !w.enterDirectory(stat) {
@@ -416,13 +482,17 @@ func (w *surfaceWalker) claimInode(stat *syscall.Stat_t) bool {
 	return true
 }
 
+// enterDirectory is keyed by device and inode together. An inode number is only
+// unique within its filesystem, so a walk that crosses volumes would otherwise
+// report an unrelated directory on a second volume as a loop.
 func (w *surfaceWalker) enterDirectory(stat *syscall.Stat_t) bool {
+	key := storage.InodeKey{Device: storage.DeviceID(stat), Inode: stat.Ino}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
-	if _, exists := w.visited[stat.Ino]; exists {
+	if _, exists := w.visited[key]; exists {
 		return false
 	}
-	w.visited[stat.Ino] = struct{}{}
+	w.visited[key] = struct{}{}
 	return true
 }
 
@@ -503,7 +573,24 @@ func (s Scanner) buildSurface(ctx context.Context, progress func(files, bytes in
 		}
 	}
 
+	if s.SurfaceRoot != "" {
+		walkRoot = filepath.Clean(s.SurfaceRoot)
+		surface.Scoped = true
+		surface.ScopeRoot = walkRoot
+		dataDevice = 0
+		if info, statErr := os.Lstat(walkRoot); statErr == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				dataDevice = storage.DeviceID(stat)
+			}
+		} else {
+			surface.Issues = append(surface.Issues, "surface root: "+storage.CompactError(statErr))
+		}
+	}
+
 	walker := newSurfaceWalker(ctx, dataDevice, s.Home)
+	walker.cross = surface.Scoped
+	walker.minFile = s.MinFileBytes
+	walker.fileLimit = s.LargeFileLimit
 	done := make(chan struct{})
 	if progress != nil {
 		go func() {
@@ -532,10 +619,37 @@ func (s Scanner) buildSurface(ctx context.Context, progress func(files, bytes in
 	surface.Hardware = walker.hardware.Load()
 	surface.Faults = walker.faults
 	surface.Elapsed = time.Since(started)
+	surface.LargeFiles = walker.LargeFiles()
+	if surface.Scoped {
+		// A scoped walk has no container to reconcile against, so it reports
+		// the tree it walked and nothing it cannot support.
+		surface.Root = scopedRoot(tree, walker.denied.Load())
+		trimTree(surface.Root, surfaceDisplayNodes)
+		return surface
+	}
 	surface.Root = assembleSurface(containers, dataPath, tree, walker.denied.Load())
 	surface.Claimed = claimedBytes(containers, dataPath)
 	trimTree(surface.Root, surfaceDisplayNodes)
 	return surface
+}
+
+// scopedRoot wraps a single-path walk. Unreadable entries still get a row of
+// their own, because a scoped walk that silently drops them would under-report
+// the same way the whole-volume walk refuses to.
+func scopedRoot(tree *SurfaceNode, denied int64) *SurfaceNode {
+	if tree == nil {
+		return nil
+	}
+	if denied > 0 {
+		tree.Children = append(tree.Children, &SurfaceNode{
+			Name:    "unreadable entries",
+			Kind:    NodeUnreadable,
+			Bytes:   -1,
+			Entries: denied,
+			Detail:  "permission denied, size unknown; grant Full Disk Access or rerun with sudo --root",
+		})
+	}
+	return tree
 }
 
 func DataVolumePath(mounts []storage.Mount) string {
@@ -633,7 +747,7 @@ func adoptWalkedTree(tree *SurfaceNode, claimed, denied int64) []*SurfaceNode {
 			Kind:    NodeUnreadable,
 			Bytes:   -1,
 			Entries: denied,
-			Detail:  "permission denied, size unknown; grant Full storage.Disk Access or rerun with sudo --root",
+			Detail:  "permission denied, size unknown; grant Full Disk Access or rerun with sudo --root",
 		})
 	}
 	return children

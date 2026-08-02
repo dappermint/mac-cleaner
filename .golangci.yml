@@ -5,6 +5,7 @@ linters:
     - bodyclose
     - copyloopvar
     - errorlint
+    - forbidigo
     - goconst
     - gocritic
     - misspell
@@ -21,6 +22,20 @@ linters:
     goconst:
       min-len: 4
       min-occurrences: 4
+    # internal/safety is the only place allowed to remove or move a file. A
+    # bypass is not forbidden, it is required to say why on the same line:
+    #   os.Remove(scratch) //nolint:forbidigo // created by MkdirTemp here
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^os\.Remove$
+          msg: route removals through internal/safety
+        - pattern: ^os\.RemoveAll$
+          msg: route removals through internal/safety
+        - pattern: ^os\.Rename$
+          msg: route moves through internal/safety
+        - pattern: ^os\.Truncate$
+          msg: route truncation through internal/safety
     gocritic:
       disabled-checks:
         - ifElseChain

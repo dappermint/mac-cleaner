@@ -35,6 +35,9 @@ type Scanner struct {
 	SkipCommands    bool
 	SkipSystem      bool
 	SkipItems       bool
+	SurfaceRoot     string
+	MinFileBytes    int64
+	LargeFileLimit  int
 	CommandTimeout  time.Duration
 	CacheMinimum    int64
 	DataMinimum     int64
@@ -190,7 +193,7 @@ func (s Scanner) Scan(ctx context.Context) Report {
 			Elapsed: time.Since(volumeStarted),
 		})
 	} else {
-		report.Issues = append(report.Issues, "disk storage.Usage: "+err.Error())
+		report.Issues = append(report.Issues, "disk usage: "+err.Error())
 		s.emit(ScanProgress{
 			ID:      volumeStageID,
 			Name:    volumeStageName,
@@ -367,16 +370,16 @@ func (s Scanner) collectors() []scanCollector {
 	}
 	collectors := []scanCollector{
 		{
+			id:      "catalog",
+			name:    "cleanup catalog",
+			detail:  "sizing known cleanup targets",
+			collect: s.collectCatalog,
+		},
+		{
 			id:      "app-data",
 			name:    "app data",
 			detail:  "sizing Application Support and sandbox containers",
 			collect: s.collectLargeData,
-		},
-		{
-			id:      "app-caches",
-			name:    "app caches",
-			detail:  "finding large per-app cache directories",
-			collect: s.collectAppCaches,
 		},
 		{
 			id:      "downloads",
@@ -759,52 +762,6 @@ func (s Scanner) collectTrash(ctx context.Context) scanResult {
 			Identity:  s.CommandIdentity,
 		},
 	}}}
-}
-
-func (s Scanner) collectAppCaches(ctx context.Context) scanResult {
-	roots := []string{
-		filepath.Join(s.Home, "Library", "Caches"),
-		filepath.Join(s.Home, ".cache"),
-	}
-	excluded := map[string]bool{
-		filepath.Join(s.Home, "Library", "Caches", "Homebrew"): true,
-		filepath.Join(s.Home, "Library", "Caches", "go-build"): true,
-		filepath.Join(s.Home, ".cache", "uv"):                  true,
-		filepath.Join(s.Home, ".cache", "nix-cache-staging"):   true,
-	}
-	var candidates []pathCandidate
-	var issues []string
-	for _, root := range roots {
-		found, foundIssues := largestChildren(ctx, root, s.CacheMinimum, 12, excluded)
-		candidates = append(candidates, found...)
-		issues = append(issues, foundIssues...)
-	}
-	sortCandidates(candidates)
-	if len(candidates) > 12 {
-		candidates = candidates[:12]
-	}
-	items := make([]Item, 0, len(candidates))
-	for _, candidate := range candidates {
-		items = append(items, Item{
-			ID:       pathID("cache", candidate.path),
-			Name:     friendlyCacheName(filepath.Base(candidate.path)),
-			Group:    "app caches",
-			Category: storage.CategorySystemData,
-			Detail:   "app-owned cache, close the related app first; this is moved to Trash so it remains recoverable until Trash is emptied",
-			Source:   storage.RelativeHome(s.Home, candidate.path),
-			Risk:     RiskReview,
-			Bytes:    candidate.bytes,
-			Modified: optionalTime(candidate.modified),
-			Estimate: estimateAllocated,
-			Action: &Action{
-				Kind:      ActionTrash,
-				Paths:     []string{candidate.path},
-				Immediate: false,
-				Identity:  s.CommandIdentity,
-			},
-		})
-	}
-	return scanResult{items: items, issues: issues}
 }
 
 func (s Scanner) collectDownloads(ctx context.Context) scanResult {
@@ -1296,9 +1253,12 @@ func regularFile(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// pathID keeps a row's id stable across scans without turning the id column
+// into a wall of hex. Four characters is ample: these are per-target, and a
+// target with enough rows to collide would be unreadable long before it did.
 func pathID(prefix, path string) string {
 	digest := sha256.Sum256([]byte(filepath.Clean(path)))
-	return fmt.Sprintf("%s-%x", prefix, digest[:5])
+	return fmt.Sprintf("%s-%x", prefix, digest[:2])
 }
 
 func friendlyCacheName(name string) string {

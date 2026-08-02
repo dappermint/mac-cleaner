@@ -140,7 +140,7 @@ func (state *tuiState) collapseSurfaceRow() {
 func surfaceLeafNotice(node *scan.SurfaceNode) string {
 	switch node.Kind {
 	case scan.NodeUnreadable:
-		return "size unknown, grant Full storage.Disk Access or rerun with sudo --root"
+		return "size unknown, grant Full Disk Access or rerun with sudo --root"
 	case scan.NodeUnwalked:
 		return "claimed by the volume, attributed to no readable file"
 	case scan.NodeForeign:
@@ -229,12 +229,20 @@ func (state *tuiState) surfaceLine(row surfaceRow, focused bool, width int) stri
 			glyph = "▾"
 		}
 	}
+	if state.marked[row.node.Path] && row.node.Path != "" {
+		glyph = "✗"
+	} else if owner, covered := state.markedAncestor(row.node.Path); covered && owner != "" && row.node.Path != "" {
+		glyph = "·"
+	}
 	depth := row.depth
 	if depth > 8 {
 		depth = 8
 	}
 	label := strings.Repeat("  ", depth) + glyph + " " + text.Clean(row.node.Name)
 	color := surfaceColor(row.node.Kind)
+	if row.node.Path != "" && state.marked[row.node.Path] {
+		color = colorAmber
+	}
 	line := cursor + " " + state.paint(color, text.PadRight(text.Truncate(label, nameWidth), nameWidth)) +
 		" " + state.paint(color, text.PadLeft(surfaceSize(row.node), sizeWidth))
 	if shareWidth > 0 {

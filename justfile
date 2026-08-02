@@ -11,6 +11,7 @@ setup:
 # what ci runs, run this before opening a pull request
 verify: fmt
     go vet ./...
+    GOOS=darwin GOARCH=amd64 go vet ./...
     golangci-lint run
     go test -race -count=1 ./...
     nix flake check
@@ -30,6 +31,18 @@ surface depth="3":
 # walk the whole surface as root and check the filesystem
 health:
     sudo go run ./cmd/ratatouille surface --root --verify
+
+# cross-compile both darwin arches and fuse them into a universal binary
+build-universal:
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o dist/rat-arm64 ./cmd/ratatouille
+    GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o dist/rat-amd64 ./cmd/ratatouille
+    lipo -create -output dist/ratatouille dist/rat-arm64 dist/rat-amd64
+    lipo -info dist/ratatouille
+
+# vet and build for intel as well, which ci does not otherwise cover locally
+check-amd64:
+    GOOS=darwin GOARCH=amd64 go vet ./...
+    GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/ratatouille
 
 # run the test suite
 test:

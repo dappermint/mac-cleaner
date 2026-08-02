@@ -310,7 +310,7 @@ func walkSignals(surface Surface) []HealthSignal {
 			coverageDetail = "the walk counted more than the volume claims, usually clones counted twice"
 		case surface.Denied > 0 && share > 2:
 			coverageLevel = HealthWatch
-			coverageDetail = "the gap is explained by unreadable trees, grant Full storage.Disk Access or rerun with sudo --root"
+			coverageDetail = "the gap is explained by unreadable trees, grant Full Disk Access or rerun with sudo --root"
 			if surface.Rootful {
 				coverageDetail = "the remaining unreadable trees are protected from root as well, so this gap is expected"
 			}
@@ -367,7 +367,7 @@ func VerifySignals(ctx context.Context, containers []storage.Container, dataPath
 				Level:  level,
 				Value:  value,
 				Detail: detail,
-				Source: "diskutil storage.VerifyVolume " + volume.Device,
+				Source: "diskutil verifyVolume " + volume.Device,
 			})
 		}
 	}

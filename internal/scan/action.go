@@ -2,7 +2,6 @@ package scan
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,9 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
-	"time"
 
+	"github.com/dappermint/ratatouille/internal/catalog"
+	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -46,41 +45,111 @@ func orderedActions(items []Item) []Item {
 	return ordered
 }
 
-func ExecuteItems(ctx context.Context, home string, items []Item, dryRun bool, out io.Writer) []ActionResult {
+// ExecuteItems runs a selection. Every path it touches goes through the
+// safety funnel, which is the only thing in this binary allowed to remove
+// anything, and which records what it did.
+func ExecuteItems(ctx context.Context, funnel *safety.Funnel, items []Item, out io.Writer) []ActionResult {
 	results := make([]ActionResult, 0, len(items))
+	var env catalog.Env
+	if hasCatalogItem(items) {
+		env = catalog.NewEnv(ctx, funnel.Home(), os.Geteuid() == 0, funnel.Identity())
+	}
 	for _, item := range orderedActions(items) {
 		result := ActionResult{ID: item.ID, Name: item.Name}
 		fmt.Fprintf(out, "\n%s\n  %s\n", item.Name, item.Action.Display())
-		if dryRun {
-			fmt.Fprintln(out, "  dry-run")
-			results = append(results, result)
-			continue
-		}
 
+		request := safety.Request{Command: CommandName, Item: item.ID, Bytes: item.Bytes}
 		switch item.Action.Kind {
 		case ActionCommand:
-			result.Error = runInteractiveCommand(ctx, *item.Action, out)
+			result.Error = executeCommand(ctx, funnel, *item.Action, request, out)
 		case ActionTrash:
-			for _, path := range item.Action.Paths {
-				if _, err := MoveToTrashAs(home, path, item.Action.Identity); err != nil {
-					result.Error = err
-					break
-				}
-			}
+			result.Error = executeTrash(ctx, funnel, env, item, request, out)
 		case ActionEmptyTrash:
-			result.Error = EmptyTrash(home)
+			outcome, err := funnel.EmptyTrash(ctx, request)
+			result.Error = err
+			reportOutcome(out, funnel.Home(), outcome, err)
 		default:
 			result.Error = fmt.Errorf("unsupported action %q", item.Action.Kind)
 		}
 
 		if result.Error != nil {
 			fmt.Fprintf(out, "  failed: %v\n", result.Error)
-		} else {
-			fmt.Fprintln(out, "  done")
 		}
 		results = append(results, result)
 	}
 	return results
+}
+
+func executeCommand(ctx context.Context, funnel *safety.Funnel, action Action, request safety.Request, out io.Writer) error {
+	if funnel.DryRun() {
+		fmt.Fprintln(out, "  dry-run")
+		funnel.RecordCommand(request, action.Display(), nil)
+		return nil
+	}
+	err := runInteractiveCommand(ctx, action, out)
+	funnel.RecordCommand(request, action.Display(), err)
+	if err == nil {
+		fmt.Fprintln(out, "  done")
+	}
+	return err
+}
+
+func executeTrash(ctx context.Context, funnel *safety.Funnel, env catalog.Env, item Item, request safety.Request, out io.Writer) error {
+	home := funnel.Home()
+	paths, skipped := recheckCatalogPaths(ctx, env, item)
+	for _, reason := range skipped {
+		fmt.Fprintf(out, "  skipped %s\n", reason)
+	}
+	sizes := pathSizes(item, paths)
+	for index, path := range paths {
+		request.Path = path
+		request.Bytes = sizes[index]
+		outcome, err := funnel.Trash(ctx, request)
+		reportOutcome(out, home, outcome, err)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pathSizes attributes each path its own measured size. Reusing the item total
+// for every path would make a fifty-path item log fifty times its real size.
+func pathSizes(item Item, paths []string) []int64 {
+	sizes := make([]int64, len(paths))
+	if item.Action == nil {
+		return sizes
+	}
+	if len(item.Action.PathBytes) == len(item.Action.Paths) {
+		measured := make(map[string]int64, len(item.Action.Paths))
+		for index, path := range item.Action.Paths {
+			measured[path] = item.Action.PathBytes[index]
+		}
+		for index, path := range paths {
+			sizes[index] = measured[path]
+		}
+		return sizes
+	}
+	if len(paths) == 1 {
+		sizes[0] = item.Bytes
+	}
+	return sizes
+}
+
+func reportOutcome(out io.Writer, home string, result safety.Result, err error) {
+	where := storage.RelativeHome(home, result.Path)
+	switch {
+	case err != nil:
+		return
+	case result.DryRun:
+		fmt.Fprintf(out, "  dry-run  %s\n", where)
+	case result.Outcome == safety.OutcomeSkipped:
+		fmt.Fprintf(out, "  already gone  %s\n", where)
+	case result.Destination != "":
+		fmt.Fprintf(out, "  done  %s, in Trash as %s\n", where, filepath.Base(result.Destination))
+	default:
+		fmt.Fprintf(out, "  done  %s\n", where)
+	}
 }
 
 func runInteractiveCommand(ctx context.Context, action Action, out io.Writer) error {
@@ -90,126 +159,4 @@ func runInteractiveCommand(ctx context.Context, action Action, out io.Writer) er
 	cmd.Stdout = out
 	cmd.Stderr = out
 	return cmd.Run()
-}
-
-func MoveToTrash(home, source string) (string, error) {
-	return MoveToTrashAs(home, source, nil)
-}
-
-func MoveToTrashAs(home, source string, identity *storage.CommandIdentity) (string, error) {
-	home, source, err := validateHomePath(home, source)
-	if err != nil {
-		return "", err
-	}
-	trash := filepath.Join(home, ".Trash")
-	if source == trash || strings.HasPrefix(source, trash+string(filepath.Separator)) {
-		return "", fmt.Errorf("refusing to re-trash %s", source)
-	}
-	if _, err := os.Lstat(source); err != nil {
-		return "", err
-	}
-	if err := ensureTrashDirectory(trash, identity); err != nil {
-		return "", err
-	}
-
-	base := filepath.Base(source)
-	stamp := time.Now().Format("20060102-150405")
-	destination := filepath.Join(trash, base+"-ratatouille-"+stamp)
-	for suffix := 2; ; suffix++ {
-		if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
-			break
-		} else if err != nil {
-			return "", err
-		}
-		destination = filepath.Join(trash, fmt.Sprintf("%s-ratatouille-%s-%d", base, stamp, suffix))
-	}
-
-	if err := os.Rename(source, destination); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
-			return "", fmt.Errorf("%s is on another volume, move it in Finder instead", source)
-		}
-		return "", err
-	}
-	return destination, nil
-}
-
-func EmptyTrash(home string) error {
-	home, trash, err := validateHomePath(home, filepath.Join(home, ".Trash"))
-	if err != nil {
-		return err
-	}
-	if trash != filepath.Join(home, ".Trash") {
-		return fmt.Errorf("refusing unexpected Trash path %s", trash)
-	}
-	info, err := os.Lstat(trash)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing non-directory Trash path %s", trash)
-	}
-	entries, err := os.ReadDir(trash)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(trash, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func ensureTrashDirectory(path string, identity *storage.CommandIdentity) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(path, 0700); err != nil {
-			return err
-		}
-		if identity != nil {
-			return os.Chown(path, int(identity.UID), int(identity.GID))
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing non-directory Trash path %s", path)
-	}
-	return nil
-}
-
-func validateHomePath(home, path string) (string, string, error) {
-	homeAbsolute, err := filepath.Abs(filepath.Clean(home))
-	if err != nil {
-		return "", "", err
-	}
-	pathAbsolute, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return "", "", err
-	}
-	if homeAbsolute == string(filepath.Separator) || len(strings.Split(strings.Trim(homeAbsolute, string(filepath.Separator)), string(filepath.Separator))) < 2 {
-		return "", "", fmt.Errorf("refusing unsafe home path %s", homeAbsolute)
-	}
-	relative, err := filepath.Rel(homeAbsolute, pathAbsolute)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", "", fmt.Errorf("refusing path outside home: %s", pathAbsolute)
-	}
-	resolvedHome, err := filepath.EvalSymlinks(homeAbsolute)
-	if err != nil {
-		return "", "", err
-	}
-	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(pathAbsolute))
-	if err != nil {
-		return "", "", err
-	}
-	resolvedRelative, err := filepath.Rel(resolvedHome, resolvedParent)
-	if err != nil || resolvedRelative == ".." || strings.HasPrefix(resolvedRelative, ".."+string(filepath.Separator)) {
-		return "", "", fmt.Errorf("refusing path through a symlink outside home: %s", pathAbsolute)
-	}
-	return homeAbsolute, pathAbsolute, nil
 }

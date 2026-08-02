@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
 	"github.com/dappermint/ratatouille/internal/text"
@@ -358,6 +359,8 @@ type tuiState struct {
 	cursors     [3]int
 	offsets     [3]int
 	expanded    map[string]bool
+	marked      map[string]bool
+	markedBytes map[string]int64
 	filterIndex int
 	notice      string
 	color       bool
@@ -380,7 +383,7 @@ func (state *tuiState) setOffset(value int) {
 	state.offsets[state.view] = value
 }
 
-func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, out io.Writer) error {
+func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, funnel *safety.Funnel, out io.Writer) error {
 	renderer := newScreenRenderer(out)
 	renderer.Enter()
 	defer renderer.Exit()
@@ -400,11 +403,13 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 	defer terminal.Restore()
 
 	state := tuiState{
-		report:   report,
-		selected: make(map[string]bool),
-		expanded: defaultExpansion(surfaceRoot(report), report.Disk.Path),
-		color:    os.Getenv("NO_COLOR") == "",
-		rootful:  rootful,
+		report:      report,
+		selected:    make(map[string]bool),
+		expanded:    defaultExpansion(surfaceRoot(report), report.Disk.Path),
+		marked:      make(map[string]bool),
+		markedBytes: make(map[string]int64),
+		color:       os.Getenv("NO_COLOR") == "",
+		rootful:     rootful,
 	}
 	state.view = state.openingView()
 	keys, resumeKeys := readKeyStream(ctx)
@@ -459,6 +464,10 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 					break
 				}
 				state.toggleCurrent()
+			case "d":
+				if state.view == viewSurface {
+					state.toggleMark()
+				}
 			case "a":
 				state.toggleSafe()
 			case "enter":
@@ -471,8 +480,18 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				}
 			case "?":
 				state.showHelp(renderer)
-			case "c":
-				items := scan.SelectedItems(state.report, state.selected)
+			case "c", "x":
+				var items []scan.Item
+				if event.key == "x" {
+					marked, ok := state.markedItem(identity)
+					if !ok {
+						state.notice = "nothing marked, press d on a directory in the surface view"
+						break
+					}
+					items = []scan.Item{marked}
+				} else {
+					items = scan.SelectedItems(state.report, state.selected)
+				}
 				if len(items) == 0 {
 					state.notice = "mark=0"
 					break
@@ -493,7 +512,7 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 					state.notice = "unchanged"
 					break
 				}
-				results := scan.ExecuteItems(ctx, home, items, false, out)
+				results := scan.ExecuteItems(ctx, funnel, items, out)
 				if err := scan.ActionErrors(results); err != nil {
 					fmt.Fprintf(out, "\n%s\n", err)
 				}
@@ -565,6 +584,7 @@ func (state *tuiState) reset(report scan.Report) {
 	state.filterIndex = 0
 	state.notice = ""
 	state.expanded = defaultExpansion(surfaceRoot(report), report.Disk.Path)
+	state.clearMarks()
 	state.view = state.openingView()
 }
 
@@ -782,6 +802,13 @@ func (state *tuiState) surfaceSummary(width int) string {
 	color := colorMint
 	if covered < 95 {
 		color = colorAmber
+	}
+	// A marked set is the thing the user is about to act on, so while one
+	// exists it takes the line the coverage figure would otherwise have.
+	if count := len(state.marked); count > 0 {
+		line := fmt.Sprintf("marked=%d  trash=%s  x to execute, d to unmark",
+			count, storage.HumanBytes(state.markedTotal()))
+		return state.paint(colorAmber, text.Truncate(line, width))
 	}
 	line := fmt.Sprintf("data volume explained %.1f%%  %s of %s", covered, storage.HumanBytes(surface.Walked), storage.HumanBytes(surface.Claimed))
 	return state.paint(color, text.Truncate(line, width))
@@ -1152,6 +1179,9 @@ func (state *tuiState) showHelp(renderer *screenRenderer) {
 		"",
 		"surface view",
 		"h/l or arrows  fold and unfold a branch",
+		"d  mark a directory for Trash   x  execute the marked set",
+		"a marked directory swallows anything marked inside it, so the",
+		"running total is the bytes you actually get back",
 		"every level sums to its parent, remainders and unreadable trees included",
 		"",
 		"actions view",

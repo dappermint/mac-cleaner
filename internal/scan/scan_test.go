@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -36,63 +37,6 @@ func TestPathUsageCountsAllocatedBlocks(t *testing.T) {
 	}
 }
 
-func TestMoveToTrashIsRecoverable(t *testing.T) {
-	home := t.TempDir()
-	source := filepath.Join(home, "Library", "Caches", "example")
-	if err := os.MkdirAll(source, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "cache.bin"), []byte("cache"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	destination, err := MoveToTrash(home, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(destination, filepath.Join(home, ".Trash")+string(filepath.Separator)) {
-		t.Fatalf("destination escaped Trash: %s", destination)
-	}
-	if _, err := os.Stat(source); !os.IsNotExist(err) {
-		t.Fatalf("source still exists: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(destination, "cache.bin")); err != nil {
-		t.Fatalf("trashed data is not recoverable: %v", err)
-	}
-}
-
-func TestMoveToTrashRejectsEscapingParentSymlink(t *testing.T) {
-	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	outside := filepath.Join(root, "outside")
-	if err := os.MkdirAll(home, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(outside, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(outside, "data"), []byte("keep"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(home, "linked")); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := MoveToTrash(home, filepath.Join(home, "linked", "data"))
-	if err == nil || !strings.Contains(err.Error(), "symlink outside home") {
-		t.Fatalf("expected symlink escape refusal, got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "data")); err != nil {
-		t.Fatalf("outside data was changed: %v", err)
-	}
-}
-
-func TestEmptyTrashRejectsUnsafeHome(t *testing.T) {
-	if err := EmptyTrash("/"); err == nil {
-		t.Fatal("expected root home path to be rejected")
-	}
-}
-
 func TestDryRunDoesNotMoveFiles(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join(home, "Downloads", "large.dmg")
@@ -112,7 +56,8 @@ func TestDryRunDoesNotMoveFiles(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	results := ExecuteItems(context.Background(), home, []Item{item}, true, &output)
+	funnel := safety.NewFunnel(home, nil, true, nil)
+	results := ExecuteItems(context.Background(), funnel, []Item{item}, &output)
 	if err := ActionErrors(results); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +72,6 @@ func TestDryRunDoesNotMoveFiles(t *testing.T) {
 func TestScannerClassifiesDataAndArtifacts(t *testing.T) {
 	home := t.TempDir()
 	paths := []string{
-		filepath.Join(home, "Library", "Caches", "com.example.app", "cache.bin"),
 		filepath.Join(home, "Library", "Application Support", "Steam", "steamapps", "game.bin"),
 		filepath.Join(home, "Downloads", "archive.dmg"),
 		filepath.Join(home, "Documents", "site", "node_modules", "package", "index.js"),
@@ -168,7 +112,6 @@ func TestScannerClassifiesDataAndArtifacts(t *testing.T) {
 		t.Fatalf("did not find %s in %#v", fragment, report.Items)
 	}
 	assertRisk("steam library", RiskProtected, false)
-	assertRisk("com.example.app", RiskReview, true)
 	assertRisk("archive.dmg", RiskReview, true)
 	assertRisk("node_modules", RiskReview, true)
 }

@@ -10,11 +10,14 @@ import (
 )
 
 type Options struct {
-	Deep      bool
-	Rootful   bool
-	Surface   bool
-	Verify    bool
-	SkipItems bool
+	Deep           bool
+	Rootful        bool
+	Surface        bool
+	Verify         bool
+	SkipItems      bool
+	SurfaceRoot    string
+	MinFileBytes   int64
+	LargeFileLimit int
 }
 
 func (o Options) Validate() error {
@@ -30,9 +33,15 @@ func Configure(home string, options Options, identity *storage.CommandIdentity) 
 	scanner.Surface = options.Surface
 	scanner.Verify = options.Verify
 	scanner.SkipItems = options.SkipItems
+	scanner.SurfaceRoot = options.SurfaceRoot
+	scanner.MinFileBytes = options.MinFileBytes
+	scanner.LargeFileLimit = options.LargeFileLimit
 	scanner.CommandIdentity = identity
 	return scanner
 }
+
+// CommandName is what the operation log records for a cleanup run.
+const CommandName = "clean"
 
 func ConfirmationPhrase(items []Item) string {
 	for _, item := range items {
@@ -40,7 +49,7 @@ func ConfirmationPhrase(items []Item) string {
 			return "empty trash"
 		}
 	}
-	return "clean"
+	return CommandName
 }
 
 func ActionErrors(results []ActionResult) error {

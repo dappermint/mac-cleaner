@@ -32,6 +32,7 @@ type Action struct {
 	Command   string                   `json:"command,omitempty"`
 	Args      []string                 `json:"args,omitempty"`
 	Paths     []string                 `json:"paths,omitempty"`
+	PathBytes []int64                  `json:"path_bytes,omitempty"`
 	Immediate bool                     `json:"immediate"`
 	Identity  *storage.CommandIdentity `json:"-"`
 }
@@ -61,6 +62,7 @@ type Item struct {
 	Category    storage.Category `json:"category"`
 	Detail      string           `json:"detail"`
 	Source      string           `json:"source,omitempty"`
+	Target      string           `json:"target,omitempty"`
 	Risk        Risk             `json:"risk"`
 	Bytes       int64            `json:"bytes"`
 	Modified    *time.Time       `json:"modified,omitempty"`

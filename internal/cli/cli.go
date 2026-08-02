@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
 	"github.com/dappermint/ratatouille/internal/text"
@@ -34,13 +35,14 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 	if err != nil {
 		return err
 	}
+	log := safety.OpenLog(home, identity)
 
 	if len(args) == 0 {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 			printUsage(out)
 			return nil
 		}
-		return tui.Run(ctx, home, rootful, identity, out)
+		return tui.Run(ctx, home, rootful, identity, safety.NewFunnel(home, identity, false, log), out)
 	}
 
 	switch args[0] {
@@ -51,7 +53,27 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 	case "plan":
 		return runPlanCommand(ctx, home, rootful, identity, args[1:], out, errOut)
 	case "clean":
-		return runCleanCommand(ctx, home, rootful, identity, args[1:], in, out, errOut)
+		return runCleanCommand(ctx, home, rootful, identity, log, args[1:], in, out, errOut)
+	case "uninstall":
+		return runUninstallCommand(ctx, home, rootful, identity, log, args[1:], in, out, errOut)
+	case "purge":
+		return runPurgeCommand(ctx, home, identity, log, args[1:], in, out, errOut)
+	case "installer":
+		return runInstallerCommand(ctx, home, identity, log, args[1:], in, out, errOut)
+	case "optimize", "optimise":
+		return runOptimizeCommand(ctx, home, rootful, identity, log, args[1:], in, out, errOut)
+	case "config":
+		return runConfigCommand(home, args[1:], out, errOut)
+	case "completion":
+		return runCompletionCommand(args[1:], out)
+	case "touchid":
+		return runTouchIDCommand(args[1:], out)
+	case "update":
+		return runUpdateCommand(out, os.Args[0])
+	case "status":
+		return runStatusCommand(ctx, isTerminal(os.Stdout), args[1:], out, errOut)
+	case "history":
+		return runHistoryCommand(home, args[1:], out, errOut)
 	case "version", "--version", "-version":
 		fmt.Fprintln(out, version)
 		return nil
@@ -96,24 +118,121 @@ func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity 
 	verify := flags.Bool("verify", false, "run a live filesystem check as well")
 	jsonOutput := flags.Bool("json", false, "print machine-readable json")
 	depth := flags.Int("depth", 3, "how many levels of the tree to print")
-	if err := flags.Parse(args); err != nil {
+	files := flags.Bool("files", false, "list the largest files instead of the tree")
+	minSize := flags.String("min-size", "100MiB", "the floor for the large file list")
+	limit := flags.Int("limit", 40, "how many large files to print")
+	positional, err := parsePositional(flags, args, 1)
+	if err != nil {
 		return err
 	}
-	if flags.NArg() != 0 {
-		return errors.New("surface does not take item ids")
+	argument := ""
+	if len(positional) == 1 {
+		argument = positional[0]
 	}
-	options := scan.Options{Rootful: rootful, Surface: true, Verify: *verify, SkipItems: true}
+
+	root, err := surfaceRoot(argument)
+	if err != nil {
+		return err
+	}
+	floor, err := storage.ParseSize(*minSize)
+	if err != nil {
+		return err
+	}
+
+	options := scan.Options{
+		Rootful:      rootful,
+		Surface:      true,
+		Verify:       *verify,
+		SkipItems:    true,
+		SurfaceRoot:  root,
+		MinFileBytes: floor,
+	}
+	if *files {
+		options.LargeFileLimit = max(*limit, 1)
+	} else {
+		options.MinFileBytes = 0
+	}
 	if err := options.Validate(); err != nil {
 		return err
 	}
+
 	report := scan.Configure(home, options, identity).Scan(ctx)
 	if *jsonOutput {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report.Surface)
 	}
+	if *files {
+		printLargeFiles(out, home, report, *limit)
+		return nil
+	}
 	printSurface(out, report, *depth)
 	return nil
+}
+
+// parsePositional works around the flag package stopping at the first
+// non-flag token, which would leave "surface ~/Downloads --depth 2" with its
+// flags unparsed. It peels positionals off one at a time and re-parses what is
+// left, so the flag package still decides which tokens are flag values.
+func parsePositional(flags *flag.FlagSet, args []string, limit int) ([]string, error) {
+	var positional []string
+	remaining := args
+	for {
+		if err := flags.Parse(remaining); err != nil {
+			return nil, err
+		}
+		rest := flags.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		if len(positional) > limit {
+			return nil, fmt.Errorf("expected at most %d arguments", limit)
+		}
+		remaining = rest[1:]
+	}
+}
+
+// surfaceRoot resolves the optional path argument. An unreadable or missing
+// path is an error here rather than an empty walk further down, so the message
+// names what went wrong.
+func surfaceRoot(argument string) (string, error) {
+	if argument == "" {
+		return "", nil
+	}
+	resolved, err := filepath.Abs(argument)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", resolved)
+	}
+	return resolved, nil
+}
+
+func printLargeFiles(out io.Writer, home string, report scan.Report, limit int) {
+	surface := report.Surface
+	if surface == nil || len(surface.LargeFiles) == 0 {
+		fmt.Fprintln(out, "no files above the size floor")
+		return
+	}
+	shown := surface.LargeFiles
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+	for _, file := range shown {
+		when := ""
+		if !file.Modified.IsZero() {
+			when = file.Modified.Local().Format("2006-01-02")
+		}
+		fmt.Fprintf(out, "%10s  %-10s  %s\n", storage.HumanBytes(file.Bytes), when, storage.RelativeHome(home, file.Path))
+	}
+	fmt.Fprintf(out, "\n%d files, %s walked in %s\n",
+		len(shown), storage.HumanBytes(surface.Walked), text.Duration(surface.Elapsed))
 }
 
 func runPlanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, out, errOut io.Writer) error {
@@ -133,7 +252,7 @@ func runPlanCommand(ctx context.Context, home string, rootful bool, identity *st
 	return nil
 }
 
-func runCleanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, in io.Reader, out, errOut io.Writer) error {
+func runCleanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, log *safety.Log, args []string, in io.Reader, out, errOut io.Writer) error {
 	flags := flag.NewFlagSet("clean", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	deep := flags.Bool("deep", false, "scan project build state")
@@ -151,7 +270,7 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *s
 	}
 	fmt.Fprint(out, scan.PlanText(items))
 	if *dryRun {
-		results := scan.ExecuteItems(ctx, home, items, true, out)
+		results := scan.ExecuteItems(ctx, safety.NewFunnel(home, identity, true, log), items, out)
 		return scan.ActionErrors(results)
 	}
 
@@ -171,7 +290,7 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *s
 		}
 	}
 
-	results := scan.ExecuteItems(ctx, home, items, false, out)
+	results := scan.ExecuteItems(ctx, safety.NewFunnel(home, identity, false, log), items, out)
 	return scan.ActionErrors(results)
 }
 
@@ -346,48 +465,187 @@ func printHealth(out io.Writer, health scan.Health) {
 	}
 }
 
+// printReport leads with what can be acted on. Sorting everything into one
+// table by category buries four selectable rows under twenty read-only ones,
+// which is the opposite of what someone running a cleanup tool is looking for.
 func printReport(out io.Writer, report scan.Report) {
 	if report.Disk.Total > 0 {
 		percent := float64(report.Disk.Free) / float64(report.Disk.Total) * 100
-		fmt.Fprintf(out, "%s free of %s on %s (%.1f%%)\n", storage.HumanBytes(report.Disk.Free), storage.HumanBytes(report.Disk.Total), report.Disk.Path, percent)
+		fmt.Fprintf(out, "%s free of %s on %s (%.1f%%)\n",
+			storage.HumanBytes(report.Disk.Free), storage.HumanBytes(report.Disk.Total), report.Disk.Path, percent)
 	}
 	if report.Disk.InUse > 0 {
 		fmt.Fprintf(out, "%s in use by this volume, container %s\n", storage.HumanBytes(report.Disk.InUse), report.Disk.Container)
 	}
-	fmt.Fprintln(out)
 	if report.Health != nil {
-		fmt.Fprintf(out, "filesystem health %s\n\n", report.Health.Level)
+		fmt.Fprintf(out, "filesystem health %s\n", report.Health.Level)
 	}
+
+	actionable, inventory := splitItems(report.Items)
+
+	fmt.Fprintf(out, "\ncleanup, %s across %d items\n\n", storage.HumanBytes(sumBytes(actionable)), len(actionable))
+	if len(actionable) == 0 {
+		fmt.Fprintln(out, "  nothing selectable was found")
+	} else {
+		fmt.Fprintf(out, "  %10s  %-11s %-18s %-22s %s\n", "size", "risk", "id", "category", "item")
+		printGrouped(out, actionable)
+		fmt.Fprintln(out, "\n  clean these with: rat clean --all-safe --dry-run")
+	}
+
+	if len(inventory) > 0 {
+		fmt.Fprintf(out, "\ninventory, %s across %d items, none of it selectable\n\n",
+			storage.HumanBytes(sumBytes(inventory)), len(inventory))
+		fmt.Fprintf(out, "  %10s  %-24s %s\n", "size", "category", "item")
+		for _, item := range inventory {
+			fmt.Fprintf(out, "  %10s  %-24s %s\n",
+				storage.HumanBytes(item.Bytes),
+				text.Truncate(storage.DisplayCategory(item.Category), 24), item.Name)
+		}
+	}
+
 	scope := "user"
 	if report.Rootful {
 		scope = "root"
 	}
-	fmt.Fprintf(out, "scope %s\n\n", scope)
-	fmt.Fprintf(out, "%-25s %-21s %-11s %10s  %s\n", "id", "category", "risk", "size", "item")
-	for _, item := range report.Items {
-		fmt.Fprintf(out, "%-25s %-21s %-11s %10s  %s\n", item.ID, storage.DisplayCategory(item.Category), item.Risk, storage.HumanBytes(item.Bytes), item.Name)
-		if item.Unavailable != "" {
-			fmt.Fprintf(out, "  unavailable: %s\n", item.Unavailable)
+	fmt.Fprintf(out, "\nscope %s", scope)
+	if len(report.Issues) > 0 {
+		fmt.Fprintf(out, ", %d notes", len(report.Issues))
+	}
+	fmt.Fprintln(out)
+}
+
+// printGrouped puts the rows of one catalog target under a single header
+// carrying its name and total, so a target that split into eight paths reads as
+// one thing with eight parts rather than eight things with the same prefix.
+func printGrouped(out io.Writer, items []scan.Item) {
+	for _, group := range groupItems(items) {
+		if len(group.items) < 2 {
+			printItemRow(out, "", group.items[0], group.items[0].Name)
+			continue
+		}
+		fmt.Fprintf(out, "  %10s  %-11s %-18s %-22s %s\n",
+			storage.HumanBytes(group.bytes), group.items[0].Risk, group.id,
+			text.Truncate(storage.DisplayCategory(group.items[0].Category), 22), groupName(group.items[0]))
+		for _, item := range group.items {
+			printItemRow(out, "   ", item, leafName(item))
 		}
 	}
-	if len(report.Issues) > 0 {
-		fmt.Fprintf(out, "\nnotes=%d\n", len(report.Issues))
+}
+
+type itemGroup struct {
+	id    string
+	bytes int64
+	items []scan.Item
+}
+
+// groupItems collects the rows of one target together and orders the groups by
+// their combined size. Ordering by the largest single row would put a target
+// totalling 2 GiB below a standalone row of 700 MiB, which reads as a mistake.
+func groupItems(items []scan.Item) []itemGroup {
+	order := make([]string, 0, len(items))
+	byTarget := make(map[string]*itemGroup, len(items))
+	for index, item := range items {
+		key := item.Target
+		if key == "" {
+			key = fmt.Sprintf("\x00standalone-%d", index)
+		}
+		group, seen := byTarget[key]
+		if !seen {
+			group = &itemGroup{id: item.Target}
+			byTarget[key] = group
+			order = append(order, key)
+		}
+		group.bytes += item.Bytes
+		group.items = append(group.items, item)
 	}
+
+	groups := make([]itemGroup, 0, len(order))
+	for _, key := range order {
+		groups = append(groups, *byTarget[key])
+	}
+	sort.SliceStable(groups, func(a, b int) bool { return groups[a].bytes > groups[b].bytes })
+	return groups
+}
+
+func printItemRow(out io.Writer, indent string, item scan.Item, label string) {
+	fmt.Fprintf(out, "  %10s  %-11s %-18s %-22s %s%s\n",
+		storage.HumanBytes(item.Bytes), item.Risk, text.Truncate(item.ID, 18),
+		text.Truncate(storage.DisplayCategory(item.Category), 22), indent, label)
+	if item.Unavailable != "" {
+		fmt.Fprintf(out, "  %10s  unavailable: %s\n", "", item.Unavailable)
+	}
+}
+
+// groupName and leafName undo the "target: leaf" naming for the grouped view.
+// The full name stays on the item, because outside this view the prefix is what
+// makes the row unambiguous.
+func groupName(item scan.Item) string {
+	if name, _, found := strings.Cut(item.Name, ": "); found {
+		return name
+	}
+	return item.Name
+}
+
+func leafName(item scan.Item) string {
+	if _, leaf, found := strings.Cut(item.Name, ": "); found {
+		return leaf
+	}
+	return item.Name
+}
+
+// splitItems separates what a user can choose from what is only there to
+// explain where the space went. Both are sorted biggest first, because size is
+// what the eye is scanning for.
+func splitItems(items []scan.Item) (actionable, inventory []scan.Item) {
+	for _, item := range items {
+		if item.Selectable() {
+			actionable = append(actionable, item)
+			continue
+		}
+		inventory = append(inventory, item)
+	}
+	sort.SliceStable(actionable, func(a, b int) bool { return actionable[a].Bytes > actionable[b].Bytes })
+	sort.SliceStable(inventory, func(a, b int) bool { return inventory[a].Bytes > inventory[b].Bytes })
+	return actionable, inventory
+}
+
+func sumBytes(items []scan.Item) int64 {
+	var total int64
+	for _, item := range items {
+		if item.Bytes > 0 {
+			total += item.Bytes
+		}
+	}
+	return total
 }
 
 func printUsage(out io.Writer) {
 	fmt.Fprint(out, `ratatouille
 
-storage.Usage:
+usage:
   ratatouille [--root]
   ratatouille scan [--root] [--deep] [--surface] [--verify] [--json]
-  ratatouille surface [--root] [--verify] [--depth n] [--json]
+  ratatouille surface [path] [--root] [--verify] [--depth n] [--json]
+  ratatouille surface [path] --files [--min-size 100MiB] [--limit n]
   ratatouille plan [--root] [--deep] [--all-safe] <item-id>...
   ratatouille clean [--root] [--deep] [--all-safe] [--dry-run] <item-id>...
+  ratatouille uninstall [--list] [--dry-run] [--permanent] [--json] <app>...
+  ratatouille purge [--all] [--trash] [--dry-run] [--json]
+  ratatouille installer [--min-size 16MiB] [--dry-run] [--json]
+  ratatouille optimize [--list] [--dry-run] [--only ids] [--skip ids] [--json]
+  ratatouille status [--watch] [--interval 2s] [--explain] [--json]
+  ratatouille config <show|path|whitelist|optimize-whitelist|purge-paths>
+  ratatouille completion <fish|zsh|bash>
+  ratatouille touchid <status|enable|disable>
+  ratatouille update
+  ratatouille history [--since 7d] [--limit n] [--id run] [--json]
 
 --root requires uid 0 and adds System Data, macOS and Other Users inventory
 --surface accounts for every byte of the data volume, including what it cannot read
 --verify runs a live filesystem check and requires uid 0
+
+every removal is recorded in ~/Library/Logs/ratatouille/operations.jsonl
+RATATOUILLE_NO_OPLOG=1 turns that off, RATATOUILLE_DRY_RUN=1 forces dry-run
 `)
 }
 
