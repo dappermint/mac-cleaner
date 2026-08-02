@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
 )
 
 const (
@@ -173,7 +173,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 	}
 	now := time.Now()
 	hostname, _ := os.Hostname()
-	title := "mac-cleaner"
+	title := "ratatouille"
 	if hostname != "" {
 		title += " / " + text.Clean(hostname)
 	}
@@ -619,7 +619,7 @@ func (state *tuiState) render(renderer *screenRenderer) {
 
 func (state *tuiState) headerLines(width int, full bool) []string {
 	hostname, _ := os.Hostname()
-	title := "mac-cleaner"
+	title := "ratatouille"
 	if hostname != "" {
 		title += " / " + text.Clean(hostname)
 	}

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 func TestPathUsageCountsAllocatedBlocks(t *testing.T) {

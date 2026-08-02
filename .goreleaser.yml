@@ -1,15 +1,15 @@
 version: 2
 
-project_name: mac-cleaner
+project_name: ratatouille
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: mac-cleaner
-    main: ./cmd/mac-cleaner
-    binary: mac-cleaner
+  - id: ratatouille
+    main: ./cmd/ratatouille
+    binary: ratatouille
     env:
       - CGO_ENABLED=0
     goos:
@@ -21,7 +21,7 @@ builds:
       - -s -w -X main.version={{ .Version }}
 
 universal_binaries:
-  - id: mac-cleaner
+  - id: ratatouille
     replace: true
 
 archives:
@@ -32,15 +32,18 @@ archives:
       - LICENSE
 
 homebrew_casks:
-  - name: mac-cleaner
-    binaries: [mac-cleaner]
+  - name: ratatouille
+    # `rat` is the short form. Both names run the same binary.
+    binaries:
+      - ratatouille
+      - ratatouille: rat
     repository:
       owner: dappermint
       name: homebrew-tap
       branch: main
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     directory: Casks
-    homepage: https://github.com/dappermint/mac-cleaner
+    homepage: https://github.com/dappermint/ratatouille
     description: Whole-surface macOS storage accounting and cleanup TUI
     license: GPL-3.0-only
     skip_upload: auto
@@ -48,7 +51,7 @@ homebrew_casks:
       post:
         install: |
           if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mac-cleaner"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ratatouille"]
           end
 
 checksum:
@@ -68,5 +71,5 @@ release:
     ## install
 
     ```sh
-    nix profile install github:dappermint/mac-cleaner
+    nix profile install github:dappermint/ratatouille
     ```

@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
+	"github.com/dappermint/ratatouille/internal/scan"
 )
 
 func TestSurfaceRowsFollowExpansion(t *testing.T) {

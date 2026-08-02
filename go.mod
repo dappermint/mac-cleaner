@@ -1,3 +1,3 @@
-module github.com/dappermint/mac-cleaner
+module github.com/dappermint/ratatouille
 
 go 1.22

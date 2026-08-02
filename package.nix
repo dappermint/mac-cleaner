@@ -5,7 +5,7 @@
 }:
 
 buildGoModule {
-  pname = "mac-cleaner";
+  pname = "ratatouille";
   inherit version;
 
   __structuredAttrs = true;
@@ -20,14 +20,15 @@ buildGoModule {
   ];
 
   postInstall = ''
-    install -Dm644 README.md "$out/share/doc/mac-cleaner/README.md"
+    install -Dm644 README.md "$out/share/doc/ratatouille/README.md"
+    ln -s ratatouille "$out/bin/rat"
   '';
 
   meta = {
     description = "Whole-surface macOS storage accounting and cleanup TUI";
-    homepage = "https://github.com/dappermint/mac-cleaner";
+    homepage = "https://github.com/dappermint/ratatouille";
     license = lib.licenses.gpl3Only;
-    mainProgram = "mac-cleaner";
+    mainProgram = "ratatouille";
     platforms = lib.platforms.darwin;
   };
 }

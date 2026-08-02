@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
 )
 
 const verifyTimeout = 20 * time.Minute

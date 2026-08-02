@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 func walkTemporaryTree(t *testing.T, root string) (*surfaceWalker, *SurfaceNode) {

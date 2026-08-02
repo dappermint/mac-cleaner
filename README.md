@@ -1,8 +1,8 @@
-# mac-cleaner
+# ratatouille
 
 macOS tells you "System Data: 235 GB" and then refuses to say another word about it. Storage settings shows a coloured bar, a few categories it will not let you open, and a recommendation to buy iCloud.
 
-mac-cleaner is a terminal app that answers the three questions that bar refuses to:
+ratatouille is a terminal app that answers the three questions that bar refuses to:
 
 - **where did the space go**, down to the directory, with every byte accounted for
 - **what is actually safe to delete**, using each tool's own cleanup command rather than guessing
@@ -36,17 +36,17 @@ It never deletes anything you did not mark. Path-based cleanup moves things to T
 
 **health** answers whether there is reason to think the filesystem is damaged. SMART verdict, NVMe media errors, controller error log, spare blocks, endurance, unsafe shutdowns, container accounting, write headroom, and IO errors seen during the walk. Most of it costs nothing because the walk gathers it anyway.
 
-Only IO errors and directory loops are direct evidence. For a verdict, `sudo mac-cleaner surface --root --verify` runs a live `fsck_apfs` through diskutil. A live check cannot repair anything; that still means recovery mode.
+Only IO errors and directory loops are direct evidence. For a verdict, `sudo ratatouille surface --root --verify` runs a live `fsck_apfs` through diskutil. A live check cannot repair anything; that still means recovery mode.
 
 ## use
 
 ```sh
-mac-cleaner                            # the tui
-sudo mac-cleaner --root                # adds System Data, macOS, other users
+ratatouille                            # the tui
+sudo ratatouille --root                # adds System Data, macOS, other users
 
-mac-cleaner surface --depth 4          # the accounting, no tui
-mac-cleaner scan --deep --json         # machine readable
-mac-cleaner clean --all-safe --dry-run
+ratatouille surface --depth 4          # the accounting, no tui
+ratatouille scan --deep --json         # machine readable
+ratatouille clean --all-safe --dry-run
 ```
 
 The surface walk is the slow part, about a minute for two million files. `scan` leaves it off unless you pass `--surface`; the TUI always runs it.
@@ -54,22 +54,22 @@ The surface walk is the slow part, about a minute for two million files. `scan` 
 ## install
 
 ```sh
-brew install dappermint/tap/mac-cleaner
+brew install dappermint/tap/ratatouille
 ```
 
 ```sh
-nix profile install github:dappermint/mac-cleaner
+nix profile install github:dappermint/ratatouille
 ```
 
 Or as a flake input:
 
 ```nix
-inputs.mac-cleaner.url = "github:dappermint/mac-cleaner";
-environment.systemPackages = [ inputs.mac-cleaner.packages.${system}.default ];
+inputs.ratatouille.url = "github:dappermint/ratatouille";
+environment.systemPackages = [ inputs.ratatouille.packages.${system}.default ];
 ```
 
 Prebuilt universal darwin binaries are attached to every
-[release](https://github.com/dappermint/mac-cleaner/releases), with checksums.
+[release](https://github.com/dappermint/ratatouille/releases), with checksums.
 
 It is not in homebrew-core. That needs 225 stars for a self-submission and a
 repository older than 30 days, so the tap is the supported route for now.
@@ -80,7 +80,7 @@ repository older than 30 days, so the tap is the supported route for now.
 Then `just` lists everything and `just verify` runs exactly what CI runs.
 
 ```
-cmd/mac-cleaner      entry point
+cmd/ratatouille      entry point
 internal/storage     allocated blocks, mounts, APFS containers, SMART
 internal/scan        items, risk, the surface walker, health signals
 internal/tui         renderer, the three views, key handling

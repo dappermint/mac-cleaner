@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 type ActionResult struct {
@@ -114,14 +114,14 @@ func MoveToTrashAs(home, source string, identity *storage.CommandIdentity) (stri
 
 	base := filepath.Base(source)
 	stamp := time.Now().Format("20060102-150405")
-	destination := filepath.Join(trash, base+"-mac-cleaner-"+stamp)
+	destination := filepath.Join(trash, base+"-ratatouille-"+stamp)
 	for suffix := 2; ; suffix++ {
 		if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
 			break
 		} else if err != nil {
 			return "", err
 		}
-		destination = filepath.Join(trash, fmt.Sprintf("%s-mac-cleaner-%s-%d", base, stamp, suffix))
+		destination = filepath.Join(trash, fmt.Sprintf("%s-ratatouille-%s-%d", base, stamp, suffix))
 	}
 
 	if err := os.Rename(source, destination); err != nil {

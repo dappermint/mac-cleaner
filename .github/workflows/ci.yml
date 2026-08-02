@@ -58,10 +58,10 @@ jobs:
 
       - name: smoke test
         run: |
-          go build -o mac-cleaner ./cmd/mac-cleaner
-          ./mac-cleaner version
-          ./mac-cleaner help
-          ./mac-cleaner surface --depth 1
+          go build -o ratatouille ./cmd/ratatouille
+          ./ratatouille version
+          ./ratatouille help
+          ./ratatouille surface --depth 1
 
   nix:
     runs-on: macos-latest
@@ -78,4 +78,4 @@ jobs:
       - name: nix build
         run: |
           nix build --print-build-logs
-          ./result/bin/mac-cleaner version
+          ./result/bin/ratatouille version

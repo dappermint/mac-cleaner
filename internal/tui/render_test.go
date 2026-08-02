@@ -6,9 +6,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)

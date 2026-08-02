@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 const roleData = "Data"

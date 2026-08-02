@@ -5,8 +5,8 @@
 The only prerequisite is [nix](https://nixos.org/download). Everything else comes from the flake.
 
 ```sh
-git clone https://github.com/dappermint/mac-cleaner
-cd mac-cleaner
+git clone https://github.com/dappermint/ratatouille
+cd ratatouille
 direnv allow      # or: nix develop
 just setup
 ```
@@ -24,7 +24,7 @@ That is gofmt, `go vet`, golangci-lint, the race-enabled test suite and `nix fla
 ## layout
 
 ```
-cmd/mac-cleaner      entry point, nothing but flag plumbing
+cmd/ratatouille      entry point, nothing but flag plumbing
 internal/storage     the filesystem underneath: allocated blocks, mounts,
                      APFS containers, SMART, running commands as another uid
 internal/scan        the domain: items, risk, the surface walker, health signals

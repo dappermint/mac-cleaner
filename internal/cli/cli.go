@@ -16,10 +16,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
-	"github.com/dappermint/mac-cleaner/internal/tui"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
+	"github.com/dappermint/ratatouille/internal/tui"
 )
 
 func Run(ctx context.Context, version string, args []string, in io.Reader, out, errOut io.Writer) error {
@@ -59,7 +59,7 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 		printUsage(out)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q, try mac-cleaner help", args[0])
+		return fmt.Errorf("unknown command %q, try ratatouille help", args[0])
 	}
 }
 
@@ -190,7 +190,7 @@ func extractRootFlag(args []string) (bool, []string) {
 
 func validateRootMode(rootful bool, effectiveUID int) error {
 	if rootful && effectiveUID != 0 {
-		return errors.New("--root requires uid 0: sudo mac-cleaner --root")
+		return errors.New("--root requires uid 0: sudo ratatouille --root")
 	}
 	return nil
 }
@@ -376,14 +376,14 @@ func printReport(out io.Writer, report scan.Report) {
 }
 
 func printUsage(out io.Writer) {
-	fmt.Fprint(out, `mac-cleaner
+	fmt.Fprint(out, `ratatouille
 
 storage.Usage:
-  mac-cleaner [--root]
-  mac-cleaner scan [--root] [--deep] [--surface] [--verify] [--json]
-  mac-cleaner surface [--root] [--verify] [--depth n] [--json]
-  mac-cleaner plan [--root] [--deep] [--all-safe] <item-id>...
-  mac-cleaner clean [--root] [--deep] [--all-safe] [--dry-run] <item-id>...
+  ratatouille [--root]
+  ratatouille scan [--root] [--deep] [--surface] [--verify] [--json]
+  ratatouille surface [--root] [--verify] [--depth n] [--json]
+  ratatouille plan [--root] [--deep] [--all-safe] <item-id>...
+  ratatouille clean [--root] [--deep] [--all-safe] [--dry-run] <item-id>...
 
 --root requires uid 0 and adds System Data, macOS and Other Users inventory
 --surface accounts for every byte of the data volume, including what it cannot read

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 type Options struct {
@@ -19,7 +19,7 @@ type Options struct {
 
 func (o Options) Validate() error {
 	if o.Verify && os.Geteuid() != 0 {
-		return errors.New("--verify requires uid 0: sudo mac-cleaner surface --root --verify")
+		return errors.New("--verify requires uid 0: sudo ratatouille surface --root --verify")
 	}
 	return nil
 }

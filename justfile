@@ -17,19 +17,19 @@ verify: fmt
 
 # run the tui against your own home directory
 run:
-    go run ./cmd/mac-cleaner
+    go run ./cmd/ratatouille
 
 # run the tui with root inventory (System Data, macOS, other users)
 run-root:
-    sudo go run ./cmd/mac-cleaner --root
+    sudo go run ./cmd/ratatouille --root
 
 # print the storage surface without opening the tui
 surface depth="3":
-    go run ./cmd/mac-cleaner surface --depth {{ depth }}
+    go run ./cmd/ratatouille surface --depth {{ depth }}
 
 # walk the whole surface as root and check the filesystem
 health:
-    sudo go run ./cmd/mac-cleaner surface --root --verify
+    sudo go run ./cmd/ratatouille surface --root --verify
 
 # run the test suite
 test:
@@ -67,7 +67,7 @@ nix-run *args:
 
 # build with nix, then run the result as root for the full inventory
 nix-run-root *args: nix-build
-    sudo ./result/bin/mac-cleaner --root {{ args }}
+    sudo ./result/bin/ratatouille --root {{ args }}
 
 # check that every flake output evaluates and builds
 nix-check:

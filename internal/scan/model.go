@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 type Risk string

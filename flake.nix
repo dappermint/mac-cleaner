@@ -22,8 +22,8 @@
           pkgs = pkgsFor system;
         in
         {
-          default = self.packages.${system}.mac-cleaner;
-          mac-cleaner = pkgs.callPackage ./package.nix { };
+          default = self.packages.${system}.ratatouille;
+          ratatouille = pkgs.callPackage ./package.nix { };
         }
       );
 
@@ -57,7 +57,7 @@
           pkgs = pkgsFor system;
         in
         {
-          build = self.packages.${system}.mac-cleaner;
+          build = self.packages.${system}.ratatouille;
 
           lint =
             pkgs.runCommand "lint"

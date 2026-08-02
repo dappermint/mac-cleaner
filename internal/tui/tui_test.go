@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
 )
 
 func TestDisplaySanitizesTerminalControls(t *testing.T) {

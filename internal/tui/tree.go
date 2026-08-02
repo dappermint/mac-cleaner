@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
-	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
+	"github.com/dappermint/ratatouille/internal/text"
 )
 
 type surfaceRow struct {

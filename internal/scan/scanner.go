@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 const (

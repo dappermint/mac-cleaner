@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dappermint/mac-cleaner/internal/scan"
-	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/ratatouille/internal/scan"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 func deepReport() scan.Report {

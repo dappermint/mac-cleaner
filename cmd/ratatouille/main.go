@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dappermint/mac-cleaner/internal/cli"
+	"github.com/dappermint/ratatouille/internal/cli"
 )
 
 var version = "dev"
@@ -24,7 +24,7 @@ func run() int {
 		if errors.Is(err, context.Canceled) {
 			return 0
 		}
-		fmt.Fprintln(os.Stderr, "mac-cleaner:", err)
+		fmt.Fprintln(os.Stderr, "ratatouille:", err)
 		return 1
 	}
 	return 0
