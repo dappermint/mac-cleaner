@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.example.app</string>
+	<key>CFBundleName</key>
+	<string>Example ünïcode</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.5.1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NumericThing</key>
+	<integer>42</integer>
+	<key>RealThing</key>
+	<real>3.5</real>
+	<key>BoolTrue</key>
+	<true/>
+	<key>BoolFalse</key>
+	<false/>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/helper</string>
+		<string>--serve</string>
+	</array>
+	<key>Nested</key>
+	<dict>
+		<key>Inner</key>
+		<string>value</string>
+	</dict>
+</dict>
+</plist>
