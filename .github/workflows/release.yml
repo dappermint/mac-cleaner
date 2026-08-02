@@ -25,7 +25,7 @@ jobs:
           version: '~> v2'
           args: >-
             release --clean
-            ${{ secrets.HOMEBREW_TAP_TOKEN == '' && '--skip=homebrew_casks' || '' }}
+            ${{ secrets.HOMEBREW_TAP_TOKEN == '' && '--skip=homebrew' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
