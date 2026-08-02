@@ -1,4 +1,4 @@
-package main
+package scan
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
 
 func walkTemporaryTree(t *testing.T, root string) (*surfaceWalker, *SurfaceNode) {
@@ -19,7 +21,7 @@ func walkTemporaryTree(t *testing.T, root string) (*surfaceWalker, *SurfaceNode)
 	if !ok {
 		t.Fatal("no stat information for the temporary root")
 	}
-	walker := newSurfaceWalker(context.Background(), deviceID(stat), root)
+	walker := newSurfaceWalker(context.Background(), storage.DeviceID(stat), root)
 	return walker, walker.Walk(root)
 }
 
@@ -59,7 +61,7 @@ func TestSurfaceWalkAccountsEveryByte(t *testing.T) {
 	_, tree := walkTemporaryTree(t, root)
 	assertChildrenSumToParent(t, tree)
 
-	measured, err := pathUsage(context.Background(), root)
+	measured, err := storage.PathUsage(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,10 +174,10 @@ func TestTrimTreePreservesParentTotals(t *testing.T) {
 }
 
 func TestContainerAccountingReconciles(t *testing.T) {
-	container := Container{
+	container := storage.Container{
 		Ceiling: 1000,
 		Free:    100,
-		Volumes: []Volume{{InUse: 600}, {InUse: 300}},
+		Volumes: []storage.Volume{{InUse: 600}, {InUse: 300}},
 	}
 	if container.VolumesInUse() != 900 {
 		t.Fatalf("volume total is %d", container.VolumesInUse())
@@ -187,20 +189,20 @@ func TestContainerAccountingReconciles(t *testing.T) {
 
 func TestHealthFlagsMediaErrorsAndReadOnlyData(t *testing.T) {
 	surface := Surface{
-		Devices: []StorageDevice{{
+		Devices: []storage.StorageDevice{{
 			Device:  "disk0",
 			Media:   "APPLE SSD",
 			Status:  "Verified",
 			Metrics: map[string]int64{"MEDIA_ERRORS_0": 4, "AVAILABLE_SPARE": 100, "AVAILABLE_SPARE_THRESHOLD": 10},
 		}},
-		Containers: []Container{{
+		Containers: []storage.Container{{
 			Reference: "disk3",
 			Ceiling:   1000,
 			Free:      500,
-			Volumes:   []Volume{{Device: "disk3s5", Name: "Data", Roles: []string{"Data"}, InUse: 500, MountedAt: "/System/Volumes/Data", ReadOnly: true}},
+			Volumes:   []storage.Volume{{Device: "disk3s5", Name: "Data", Roles: []string{"Data"}, InUse: 500, MountedAt: "/System/Volumes/Data", ReadOnly: true}},
 		}},
 	}
-	health := evaluateHealth(surface, "/System/Volumes/Data")
+	health := EvaluateHealth(surface, "/System/Volumes/Data")
 	if health.Level != HealthAlarm {
 		t.Fatalf("expected an alarm, got %s", health.Level)
 	}
@@ -218,17 +220,17 @@ func TestHealthFlagsMediaErrorsAndReadOnlyData(t *testing.T) {
 
 func TestHealthStaysQuietOnAHealthyMachine(t *testing.T) {
 	surface := Surface{
-		Devices: []StorageDevice{{
+		Devices: []storage.StorageDevice{{
 			Device:  "disk0",
 			Status:  "Verified",
 			Metrics: map[string]int64{"MEDIA_ERRORS_0": 0, "PERCENTAGE_USED": 3, "AVAILABLE_SPARE": 100, "AVAILABLE_SPARE_THRESHOLD": 99},
 		}},
-		Containers: []Container{{Reference: "disk3", Ceiling: 1000, Free: 500, Volumes: []Volume{{InUse: 500, Roles: []string{"Data"}, MountedAt: "/System/Volumes/Data"}}}},
-		Mounts:     []Mount{{Path: "/System/Volumes/Data", Total: 1000, Available: 500}},
+		Containers: []storage.Container{{Reference: "disk3", Ceiling: 1000, Free: 500, Volumes: []storage.Volume{{InUse: 500, Roles: []string{"Data"}, MountedAt: "/System/Volumes/Data"}}}},
+		Mounts:     []storage.Mount{{Path: "/System/Volumes/Data", Total: 1000, Available: 500}},
 		Claimed:    500,
 		Walked:     500,
 	}
-	health := evaluateHealth(surface, "/System/Volumes/Data")
+	health := EvaluateHealth(surface, "/System/Volumes/Data")
 	if health.Level != HealthOK {
 		for _, signal := range health.Signals {
 			if signal.Level != HealthOK {
@@ -239,39 +241,13 @@ func TestHealthStaysQuietOnAHealthyMachine(t *testing.T) {
 	}
 }
 
-func TestSurfaceRowsFollowExpansion(t *testing.T) {
-	root := &SurfaceNode{
-		Name:  "all storage",
-		Kind:  NodeSurface,
-		Bytes: 100,
-		Children: []*SurfaceNode{{
-			Name:     "container disk3",
-			Kind:     NodeContainer,
-			Bytes:    100,
-			Children: []*SurfaceNode{{Name: "Data", Kind: NodeVolume, Bytes: 100, Path: "/System/Volumes/Data"}},
-		}},
-	}
-	rows := surfaceRows(root, map[string]bool{})
-	if len(rows) != 1 {
-		t.Fatalf("a collapsed root should render one row, got %d", len(rows))
-	}
-	expanded := defaultExpansion(root, "/System/Volumes/Data")
-	rows = surfaceRows(root, expanded)
-	if len(rows) != 3 {
-		t.Fatalf("the data volume chain should be open, got %d rows", len(rows))
-	}
-	if rows[2].node.Name != "Data" {
-		t.Fatalf("expected the data volume last, got %q", rows[2].node.Name)
-	}
-}
-
 func TestPathUsageStopsAtMountBoundaries(t *testing.T) {
 	root := "/Library/Developer/CoreSimulator/Volumes"
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) == 0 {
 		t.Skip("no simulator runtime volume is mounted on this machine")
 	}
-	measured, err := pathUsage(context.Background(), root)
+	measured, err := storage.PathUsage(context.Background(), root)
 	if err != nil {
 		t.Fatalf("bounded walk failed: %v", err)
 	}

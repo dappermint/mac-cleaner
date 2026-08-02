@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -10,30 +10,19 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
+
+	"github.com/dappermint/mac-cleaner/internal/scan"
+	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/mac-cleaner/internal/text"
+	"github.com/dappermint/mac-cleaner/internal/tui"
 )
 
-var version = "dev"
-
-func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
-		fmt.Fprintln(os.Stderr, "mac-cleaner:", err)
-		os.Exit(1)
-	}
-}
-
-func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
+func Run(ctx context.Context, version string, args []string, in io.Reader, out, errOut io.Writer) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("this tool only supports macOS")
 	}
@@ -41,7 +30,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if err := validateRootMode(rootful, os.Geteuid()); err != nil {
 		return err
 	}
-	home, identity, err := scanIdentity(rootful)
+	home, identity, err := scanIdentity(ctx, rootful)
 	if err != nil {
 		return err
 	}
@@ -51,7 +40,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			printUsage(out)
 			return nil
 		}
-		return runTUI(ctx, home, rootful, identity, out)
+		return tui.Run(ctx, home, rootful, identity, out)
 	}
 
 	switch args[0] {
@@ -74,7 +63,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	}
 }
 
-func runScanCommand(ctx context.Context, home string, rootful bool, identity *commandIdentity, args []string, out, errOut io.Writer) error {
+func runScanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, out, errOut io.Writer) error {
 	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	deep := flags.Bool("deep", false, "scan project build state")
@@ -87,11 +76,11 @@ func runScanCommand(ctx context.Context, home string, rootful bool, identity *co
 	if flags.NArg() != 0 {
 		return errors.New("scan does not take item ids")
 	}
-	options := scanOptions{deep: *deep, rootful: rootful, surface: *surface || *verify, verify: *verify}
-	if err := options.validate(); err != nil {
+	options := scan.Options{Deep: *deep, Rootful: rootful, Surface: *surface || *verify, Verify: *verify}
+	if err := options.Validate(); err != nil {
 		return err
 	}
-	report := configuredScanner(home, options, identity).Scan(ctx)
+	report := scan.Configure(home, options, identity).Scan(ctx)
 	if *jsonOutput {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
@@ -101,7 +90,7 @@ func runScanCommand(ctx context.Context, home string, rootful bool, identity *co
 	return nil
 }
 
-func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity *commandIdentity, args []string, out, errOut io.Writer) error {
+func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, out, errOut io.Writer) error {
 	flags := flag.NewFlagSet("surface", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	verify := flags.Bool("verify", false, "run a live filesystem check as well")
@@ -113,11 +102,11 @@ func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity 
 	if flags.NArg() != 0 {
 		return errors.New("surface does not take item ids")
 	}
-	options := scanOptions{rootful: rootful, surface: true, verify: *verify, skipItems: true}
-	if err := options.validate(); err != nil {
+	options := scan.Options{Rootful: rootful, Surface: true, Verify: *verify, SkipItems: true}
+	if err := options.Validate(); err != nil {
 		return err
 	}
-	report := configuredScanner(home, options, identity).Scan(ctx)
+	report := scan.Configure(home, options, identity).Scan(ctx)
 	if *jsonOutput {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
@@ -127,7 +116,7 @@ func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity 
 	return nil
 }
 
-func runPlanCommand(ctx context.Context, home string, rootful bool, identity *commandIdentity, args []string, out, errOut io.Writer) error {
+func runPlanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, out, errOut io.Writer) error {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	deep := flags.Bool("deep", false, "scan project build state")
@@ -135,16 +124,16 @@ func runPlanCommand(ctx context.Context, home string, rootful bool, identity *co
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	report := configuredScanner(home, scanOptions{deep: *deep, rootful: rootful}, identity).Scan(ctx)
+	report := scan.Configure(home, scan.Options{Deep: *deep, Rootful: rootful}, identity).Scan(ctx)
 	items, err := resolveItems(report, flags.Args(), *allSafe)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, planText(items))
+	fmt.Fprint(out, scan.PlanText(items))
 	return nil
 }
 
-func runCleanCommand(ctx context.Context, home string, rootful bool, identity *commandIdentity, args []string, in io.Reader, out, errOut io.Writer) error {
+func runCleanCommand(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, args []string, in io.Reader, out, errOut io.Writer) error {
 	flags := flag.NewFlagSet("clean", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	deep := flags.Bool("deep", false, "scan project build state")
@@ -155,18 +144,18 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *c
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	report := configuredScanner(home, scanOptions{deep: *deep, rootful: rootful}, identity).Scan(ctx)
+	report := scan.Configure(home, scan.Options{Deep: *deep, Rootful: rootful}, identity).Scan(ctx)
 	items, err := resolveItems(report, flags.Args(), *allSafe)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, planText(items))
+	fmt.Fprint(out, scan.PlanText(items))
 	if *dryRun {
-		results := executeItems(ctx, home, items, true, out)
-		return actionErrors(results)
+		results := scan.ExecuteItems(ctx, home, items, true, out)
+		return scan.ActionErrors(results)
 	}
 
-	phrase := confirmationPhrase(items)
+	phrase := scan.ConfirmationPhrase(items)
 	if *yes {
 		if phrase == "empty trash" && *confirm != phrase {
 			return errors.New("irreversible cleanup needs --confirm 'empty trash'")
@@ -182,8 +171,8 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *c
 		}
 	}
 
-	results := executeItems(ctx, home, items, false, out)
-	return actionErrors(results)
+	results := scan.ExecuteItems(ctx, home, items, false, out)
+	return scan.ActionErrors(results)
 }
 
 func extractRootFlag(args []string) (bool, []string) {
@@ -206,7 +195,7 @@ func validateRootMode(rootful bool, effectiveUID int) error {
 	return nil
 }
 
-func scanIdentity(rootful bool) (string, *commandIdentity, error) {
+func scanIdentity(ctx context.Context, rootful bool) (string, *storage.CommandIdentity, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, err
@@ -215,26 +204,34 @@ func scanIdentity(rootful bool) (string, *commandIdentity, error) {
 		return home, nil, nil
 	}
 	username := os.Getenv("SUDO_USER")
-	uid, uidErr := strconv.ParseUint(os.Getenv("SUDO_UID"), 10, 32)
-	gid, gidErr := strconv.ParseUint(os.Getenv("SUDO_GID"), 10, 32)
-	if username == "" || username == "root" || uidErr != nil || gidErr != nil || !validUsername(username) {
+	uid, uidKnown := sudoID("SUDO_UID")
+	gid, gidKnown := sudoID("SUDO_GID")
+	if username == "" || username == "root" || !uidKnown || !gidKnown || !validUsername(username) {
 		return home, nil, nil
 	}
 	candidate := filepath.Join("/Users", username)
 	if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
 		home = candidate
 	}
-	return home, &commandIdentity{
-		UID:      uint32(uid),
-		GID:      uint32(gid),
-		Groups:   userGroups(username, uint32(gid)),
+	return home, &storage.CommandIdentity{
+		UID:      uid,
+		GID:      gid,
+		Groups:   userGroups(ctx, username, gid),
 		Username: username,
 		Home:     home,
 	}, nil
 }
 
-func userGroups(username string, primary uint32) []uint32 {
-	output, err := exec.Command("/usr/bin/id", "-G", username).Output()
+func sudoID(variable string) (uint32, bool) {
+	value, err := strconv.ParseUint(os.Getenv(variable), 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(value), true
+}
+
+func userGroups(ctx context.Context, username string, primary uint32) []uint32 {
+	output, err := exec.CommandContext(ctx, "/usr/bin/id", "-G", username).Output()
 	if err != nil {
 		return []uint32{primary}
 	}
@@ -259,36 +256,11 @@ func validUsername(username string) bool {
 	return username != "" && username != "." && username != ".." && filepath.Base(username) == username
 }
 
-type scanOptions struct {
-	deep      bool
-	rootful   bool
-	surface   bool
-	verify    bool
-	skipItems bool
-}
-
-func (o scanOptions) validate() error {
-	if o.verify && os.Geteuid() != 0 {
-		return errors.New("--verify requires uid 0: sudo mac-cleaner surface --root --verify")
-	}
-	return nil
-}
-
-func configuredScanner(home string, options scanOptions, identity *commandIdentity) Scanner {
-	scanner := NewScanner(home, options.deep)
-	scanner.Rootful = options.rootful
-	scanner.Surface = options.surface
-	scanner.Verify = options.verify
-	scanner.SkipItems = options.skipItems
-	scanner.CommandIdentity = identity
-	return scanner
-}
-
-func resolveItems(report Report, args []string, allSafe bool) ([]Item, error) {
+func resolveItems(report scan.Report, args []string, allSafe bool) ([]scan.Item, error) {
 	ids := make(map[string]bool)
 	if allSafe {
 		for _, item := range report.Items {
-			if item.Risk == RiskSafe && item.Selectable() {
+			if item.Risk == scan.RiskSafe && item.Selectable() {
 				ids[item.ID] = true
 			}
 		}
@@ -305,7 +277,7 @@ func resolveItems(report Report, args []string, allSafe bool) ([]Item, error) {
 		return nil, errors.New("choose at least one item id or use --all-safe")
 	}
 	for id := range ids {
-		item, ok := itemByID(report, id)
+		item, ok := scan.ItemByID(report, id)
 		if !ok {
 			return nil, fmt.Errorf("unknown item id %q", id)
 		}
@@ -313,36 +285,14 @@ func resolveItems(report Report, args []string, allSafe bool) ([]Item, error) {
 			return nil, fmt.Errorf("item %q is not cleanable", id)
 		}
 	}
-	items := selectedItems(report, ids)
+	items := scan.SelectedItems(report, ids)
 	sort.SliceStable(items, func(a, b int) bool {
-		return riskOrder(items[a].Risk) < riskOrder(items[b].Risk)
+		return scan.RiskOrder(items[a].Risk) < scan.RiskOrder(items[b].Risk)
 	})
 	return items, nil
 }
 
-func confirmationPhrase(items []Item) string {
-	for _, item := range items {
-		if item.Action != nil && item.Action.Kind == ActionEmptyTrash {
-			return "empty trash"
-		}
-	}
-	return "clean"
-}
-
-func actionErrors(results []ActionResult) error {
-	var failed []string
-	for _, result := range results {
-		if result.Error != nil {
-			failed = append(failed, result.Name)
-		}
-	}
-	if len(failed) > 0 {
-		return fmt.Errorf("%d action(s) failed: %s", len(failed), strings.Join(failed, ", "))
-	}
-	return nil
-}
-
-func printSurface(out io.Writer, report Report, depth int) {
+func printSurface(out io.Writer, report scan.Report, depth int) {
 	surface := report.Surface
 	if surface == nil || surface.Root == nil {
 		fmt.Fprintln(out, "no surface was measured")
@@ -350,7 +300,7 @@ func printSurface(out io.Writer, report Report, depth int) {
 	}
 	printSurfaceNode(out, surface.Root, surface.Root.Total(), 0, depth)
 	fmt.Fprintf(out, "\nwalked %s in %s across %d files, %d unreadable entries\n",
-		humanBytes(surface.Walked), formatDuration(surface.Elapsed), surface.Files, surface.Denied)
+		storage.HumanBytes(surface.Walked), text.Duration(surface.Elapsed), surface.Files, surface.Denied)
 	if report.Health != nil {
 		printHealth(out, *report.Health)
 	}
@@ -359,12 +309,12 @@ func printSurface(out io.Writer, report Report, depth int) {
 	}
 }
 
-func printSurfaceNode(out io.Writer, node *SurfaceNode, parent int64, level, depth int) {
+func printSurfaceNode(out io.Writer, node *scan.SurfaceNode, parent int64, level, depth int) {
 	share := ""
 	if parent > 0 {
 		share = fmt.Sprintf("%5.1f%%", float64(node.Total())/float64(parent)*100)
 	}
-	size := humanBytes(node.Bytes)
+	size := storage.HumanBytes(node.Bytes)
 	if node.Bytes < 0 {
 		size = "unknown"
 	}
@@ -377,11 +327,11 @@ func printSurfaceNode(out io.Writer, node *SurfaceNode, parent int64, level, dep
 	}
 }
 
-func printHealth(out io.Writer, health Health) {
+func printHealth(out io.Writer, health scan.Health) {
 	clean := 0
 	fmt.Fprintf(out, "\nfilesystem health: %s (%s)\n", health.Level, health.Summary())
 	for _, signal := range health.Signals {
-		if signal.Level == HealthOK && !strings.HasPrefix(signal.ID, "verify-") {
+		if signal.Level == scan.HealthOK && !strings.HasPrefix(signal.ID, "verify-") {
 			clean++
 			continue
 		}
@@ -396,13 +346,13 @@ func printHealth(out io.Writer, health Health) {
 	}
 }
 
-func printReport(out io.Writer, report Report) {
+func printReport(out io.Writer, report scan.Report) {
 	if report.Disk.Total > 0 {
 		percent := float64(report.Disk.Free) / float64(report.Disk.Total) * 100
-		fmt.Fprintf(out, "%s free of %s on %s (%.1f%%)\n", humanBytes(report.Disk.Free), humanBytes(report.Disk.Total), report.Disk.Path, percent)
+		fmt.Fprintf(out, "%s free of %s on %s (%.1f%%)\n", storage.HumanBytes(report.Disk.Free), storage.HumanBytes(report.Disk.Total), report.Disk.Path, percent)
 	}
 	if report.Disk.InUse > 0 {
-		fmt.Fprintf(out, "%s in use by this volume, container %s\n", humanBytes(report.Disk.InUse), report.Disk.Container)
+		fmt.Fprintf(out, "%s in use by this volume, container %s\n", storage.HumanBytes(report.Disk.InUse), report.Disk.Container)
 	}
 	fmt.Fprintln(out)
 	if report.Health != nil {
@@ -415,7 +365,7 @@ func printReport(out io.Writer, report Report) {
 	fmt.Fprintf(out, "scope %s\n\n", scope)
 	fmt.Fprintf(out, "%-25s %-21s %-11s %10s  %s\n", "id", "category", "risk", "size", "item")
 	for _, item := range report.Items {
-		fmt.Fprintf(out, "%-25s %-21s %-11s %10s  %s\n", item.ID, displayCategory(item.Category), item.Risk, humanBytes(item.Bytes), item.Name)
+		fmt.Fprintf(out, "%-25s %-21s %-11s %10s  %s\n", item.ID, storage.DisplayCategory(item.Category), item.Risk, storage.HumanBytes(item.Bytes), item.Name)
 		if item.Unavailable != "" {
 			fmt.Fprintf(out, "  unavailable: %s\n", item.Unavailable)
 		}
@@ -428,7 +378,7 @@ func printReport(out io.Writer, report Report) {
 func printUsage(out io.Writer) {
 	fmt.Fprint(out, `mac-cleaner
 
-usage:
+storage.Usage:
   mac-cleaner [--root]
   mac-cleaner scan [--root] [--deep] [--surface] [--verify] [--json]
   mac-cleaner surface [--root] [--verify] [--depth n] [--json]

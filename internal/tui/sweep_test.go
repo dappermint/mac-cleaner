@@ -1,34 +1,37 @@
-package main
+package tui
 
 import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/dappermint/mac-cleaner/internal/scan"
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
 
-func deepReport() Report {
+func deepReport() scan.Report {
 	report := sampleReport()
 	node := report.Surface.Root.Children[0].Children[0]
 	for depth := 0; depth < 7; depth++ {
-		child := &SurfaceNode{
+		child := &scan.SurfaceNode{
 			Name:     fmt.Sprintf("a very long directory name that will not fit at level %d", depth),
-			Kind:     NodeDirectory,
+			Kind:     scan.NodeDirectory,
 			Path:     "/System/Volumes/Data/" + strings.Repeat("nested/", depth+1),
 			Bytes:    node.Bytes,
-			Category: CategorySystemData,
+			Category: storage.CategorySystemData,
 		}
-		node.Children = append([]*SurfaceNode{child}, node.Children...)
+		node.Children = append([]*scan.SurfaceNode{child}, node.Children...)
 		node = child
 	}
 	for index := 0; index < 12; index++ {
-		report.Items = append(report.Items, Item{
+		report.Items = append(report.Items, scan.Item{
 			ID:     fmt.Sprintf("filler-%02d", index),
 			Name:   strings.Repeat("long item name ", 6),
 			Group:  "app caches",
-			Risk:   RiskReview,
+			Risk:   scan.RiskReview,
 			Bytes:  int64(index) * 1024,
 			Detail: strings.Repeat("detail ", 20),
-			Action: &Action{Kind: ActionTrash, Paths: []string{"/tmp/example"}},
+			Action: &scan.Action{Kind: scan.ActionTrash, Paths: []string{"/tmp/example"}},
 		})
 	}
 	return report

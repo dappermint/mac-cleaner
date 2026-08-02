@@ -1,7 +1,6 @@
-package main
+package scan
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,56 +12,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
-
-type cappedBuffer struct {
-	buffer bytes.Buffer
-	limit  int
-}
-
-type commandIdentity struct {
-	UID      uint32
-	GID      uint32
-	Groups   []uint32
-	Username string
-	Home     string
-}
-
-func (b *cappedBuffer) Write(data []byte) (int, error) {
-	original := len(data)
-	remaining := b.limit - b.buffer.Len()
-	if remaining > 0 {
-		if len(data) > remaining {
-			data = data[:remaining]
-		}
-		_, _ = b.buffer.Write(data)
-	}
-	return original, nil
-}
-
-func (b *cappedBuffer) String() string {
-	return b.buffer.String()
-}
-
-func captureCommand(ctx context.Context, timeout time.Duration, command string, args ...string) (string, error) {
-	return captureCommandAs(ctx, timeout, nil, command, args...)
-}
-
-func captureCommandAs(ctx context.Context, timeout time.Duration, identity *commandIdentity, command string, args ...string) (string, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	output := &cappedBuffer{limit: 2 * 1024 * 1024}
-	cmd := exec.CommandContext(commandCtx, command, args...)
-	applyCommandIdentity(cmd, identity)
-	cmd.Stdout = output
-	cmd.Stderr = output
-	err := cmd.Run()
-	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
-		return output.String(), fmt.Errorf("timed out after %s", timeout)
-	}
-	return output.String(), err
-}
 
 type ActionResult struct {
 	ID    string
@@ -70,17 +22,17 @@ type ActionResult struct {
 	Error error
 }
 
-func planText(items []Item) string {
+func PlanText(items []Item) string {
 	if len(items) == 0 {
 		return "mark=0\n"
 	}
 	var result strings.Builder
 	result.WriteString("execute\n\n")
 	for _, item := range orderedActions(items) {
-		fmt.Fprintf(&result, "%-20s %-11s %-9s %s\n", displayCategory(item.Category), item.Risk, humanBytes(item.Bytes), item.Name)
+		fmt.Fprintf(&result, "%-20s %-11s %-9s %s\n", storage.DisplayCategory(item.Category), item.Risk, storage.HumanBytes(item.Bytes), item.Name)
 		fmt.Fprintf(&result, "  %s\n", item.Action.Display())
 	}
-	fmt.Fprintf(&result, "\n%s\n", describeSelection(items))
+	fmt.Fprintf(&result, "\n%s\n", DescribeSelection(items))
 	return result.String()
 }
 
@@ -94,7 +46,7 @@ func orderedActions(items []Item) []Item {
 	return ordered
 }
 
-func executeItems(ctx context.Context, home string, items []Item, dryRun bool, out io.Writer) []ActionResult {
+func ExecuteItems(ctx context.Context, home string, items []Item, dryRun bool, out io.Writer) []ActionResult {
 	results := make([]ActionResult, 0, len(items))
 	for _, item := range orderedActions(items) {
 		result := ActionResult{ID: item.ID, Name: item.Name}
@@ -110,13 +62,13 @@ func executeItems(ctx context.Context, home string, items []Item, dryRun bool, o
 			result.Error = runInteractiveCommand(ctx, *item.Action, out)
 		case ActionTrash:
 			for _, path := range item.Action.Paths {
-				if _, err := moveToTrashAs(home, path, item.Action.Identity); err != nil {
+				if _, err := MoveToTrashAs(home, path, item.Action.Identity); err != nil {
 					result.Error = err
 					break
 				}
 			}
 		case ActionEmptyTrash:
-			result.Error = emptyTrash(home)
+			result.Error = EmptyTrash(home)
 		default:
 			result.Error = fmt.Errorf("unsupported action %q", item.Action.Kind)
 		}
@@ -133,46 +85,18 @@ func executeItems(ctx context.Context, home string, items []Item, dryRun bool, o
 
 func runInteractiveCommand(ctx context.Context, action Action, out io.Writer) error {
 	cmd := exec.CommandContext(ctx, action.Command, action.Args...)
-	applyCommandIdentity(cmd, action.Identity)
+	storage.ApplyCommandIdentity(cmd, action.Identity)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = out
 	cmd.Stderr = out
 	return cmd.Run()
 }
 
-func applyCommandIdentity(cmd *exec.Cmd, identity *commandIdentity) {
-	if identity == nil {
-		return
-	}
-	cmd.Dir = identity.Home
-	cmd.Env = commandEnvironment(os.Environ(), identity)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-		Uid:    identity.UID,
-		Gid:    identity.GID,
-		Groups: identity.Groups,
-	}}
+func MoveToTrash(home, source string) (string, error) {
+	return MoveToTrashAs(home, source, nil)
 }
 
-func commandEnvironment(environment []string, identity *commandIdentity) []string {
-	filtered := make([]string, 0, len(environment)+3)
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, "HOME=") || strings.HasPrefix(entry, "USER=") || strings.HasPrefix(entry, "LOGNAME=") {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	return append(filtered,
-		"HOME="+identity.Home,
-		"USER="+identity.Username,
-		"LOGNAME="+identity.Username,
-	)
-}
-
-func moveToTrash(home, source string) (string, error) {
-	return moveToTrashAs(home, source, nil)
-}
-
-func moveToTrashAs(home, source string, identity *commandIdentity) (string, error) {
+func MoveToTrashAs(home, source string, identity *storage.CommandIdentity) (string, error) {
 	home, source, err := validateHomePath(home, source)
 	if err != nil {
 		return "", err
@@ -209,7 +133,7 @@ func moveToTrashAs(home, source string, identity *commandIdentity) (string, erro
 	return destination, nil
 }
 
-func emptyTrash(home string) error {
+func EmptyTrash(home string) error {
 	home, trash, err := validateHomePath(home, filepath.Join(home, ".Trash"))
 	if err != nil {
 		return err
@@ -239,7 +163,7 @@ func emptyTrash(home string) error {
 	return nil
 }
 
-func ensureTrashDirectory(path string, identity *commandIdentity) error {
+func ensureTrashDirectory(path string, identity *storage.CommandIdentity) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := os.Mkdir(path, 0700); err != nil {

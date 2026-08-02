@@ -1,4 +1,4 @@
-package main
+package scan
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
 
 const (
@@ -38,7 +40,7 @@ type Scanner struct {
 	DataMinimum     int64
 	ArtifactMinimum int64
 	SystemMinimum   int64
-	CommandIdentity *commandIdentity
+	CommandIdentity *storage.CommandIdentity
 	Progress        func(ScanProgress)
 	rootPaths       *rootInventoryPaths
 }
@@ -61,7 +63,7 @@ type ScanProgress struct {
 	Bytes   int64
 	Unknown int
 	Issues  int
-	Disk    *Disk
+	Disk    *storage.Disk
 	Started time.Time
 	Elapsed time.Duration
 }
@@ -87,13 +89,13 @@ type pathCandidate struct {
 
 type inventoryTarget struct {
 	path     string
-	category StorageCategory
+	category storage.Category
 }
 
 type userDataTarget struct {
 	path     string
 	name     string
-	category StorageCategory
+	category storage.Category
 }
 
 type rootInventoryPaths struct {
@@ -127,16 +129,16 @@ func (s Scanner) Scan(ctx context.Context) Report {
 		totalStages++
 	}
 	s.emit(ScanProgress{
-		ID:     "volume",
-		Name:   "data volume",
-		Detail: "reading capacity and physical free space",
+		ID:     volumeStageID,
+		Name:   volumeStageName,
+		Detail: volumeStageDetail,
 		State:  ScanQueued,
 		Total:  totalStages,
 	})
 	if s.Surface {
 		s.emit(ScanProgress{
-			ID:     surfaceStageID,
-			Name:   "disk surface",
+			ID:     SurfaceStageID,
+			Name:   surfaceStageName,
 			Detail: surfaceStageDetail,
 			State:  ScanQueued,
 			Total:  totalStages,
@@ -163,24 +165,24 @@ func (s Scanner) Scan(ctx context.Context) Report {
 
 	volumeStarted := time.Now()
 	s.emit(ScanProgress{
-		ID:      "volume",
-		Name:    "data volume",
-		Detail:  "reading capacity and physical free space",
+		ID:      volumeStageID,
+		Name:    volumeStageName,
+		Detail:  volumeStageDetail,
 		State:   ScanRunning,
 		Total:   totalStages,
 		Started: volumeStarted,
 	})
-	diskPath := "/System/Volumes/Data"
+	diskPath := storage.DataVolume
 	if _, err := os.Stat(diskPath); err != nil {
 		diskPath = "/"
 	}
-	if disk, err := diskUsage(diskPath); err == nil {
+	if disk, err := storage.DiskUsage(diskPath); err == nil {
 		report.Disk = disk
 		diskCopy := disk
 		s.emit(ScanProgress{
-			ID:      "volume",
-			Name:    "data volume",
-			Detail:  "reading capacity and physical free space",
+			ID:      volumeStageID,
+			Name:    volumeStageName,
+			Detail:  volumeStageDetail,
 			State:   ScanDone,
 			Total:   totalStages,
 			Disk:    &diskCopy,
@@ -188,11 +190,11 @@ func (s Scanner) Scan(ctx context.Context) Report {
 			Elapsed: time.Since(volumeStarted),
 		})
 	} else {
-		report.Issues = append(report.Issues, "disk usage: "+err.Error())
+		report.Issues = append(report.Issues, "disk storage.Usage: "+err.Error())
 		s.emit(ScanProgress{
-			ID:      "volume",
-			Name:    "data volume",
-			Detail:  "reading capacity and physical free space",
+			ID:      volumeStageID,
+			Name:    volumeStageName,
+			Detail:  volumeStageDetail,
 			State:   ScanDone,
 			Total:   totalStages,
 			Issues:  1,
@@ -265,13 +267,19 @@ func (s Scanner) Scan(ctx context.Context) Report {
 			report.Disk.Container = containerHolding(surface.Containers, report.Disk.Path)
 		}
 	}
-	report.Issues = uniqueStrings(report.Issues)
+	report.Issues = storage.UniqueStrings(report.Issues)
 	report.Sort()
 	return report
 }
 
 const (
-	surfaceStageID     = "surface"
+	volumeStageID      = "volume"
+	volumeStageName    = "data volume"
+	volumeStageDetail  = "reading capacity and physical free space"
+	surfaceStageName   = "disk surface"
+	groupSupported     = "supported cleanup"
+	estimateAllocated  = "allocated bytes"
+	SurfaceStageID     = "surface"
 	surfaceStageDetail = "walking every readable byte of the data volume"
 	verifyStageID      = "verify"
 	verifyStageDetail  = "asking diskutil to check the live filesystem"
@@ -280,8 +288,8 @@ const (
 func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface, Health) {
 	started := time.Now()
 	s.emit(ScanProgress{
-		ID:      surfaceStageID,
-		Name:    "disk surface",
+		ID:      SurfaceStageID,
+		Name:    surfaceStageName,
 		Detail:  surfaceStageDetail,
 		State:   ScanRunning,
 		Total:   totalStages,
@@ -289,8 +297,8 @@ func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface,
 	})
 	surface := s.buildSurface(ctx, func(files, bytes int64) {
 		s.emit(ScanProgress{
-			ID:      surfaceStageID,
-			Name:    "disk surface",
+			ID:      SurfaceStageID,
+			Name:    surfaceStageName,
 			Detail:  surfaceStageDetail,
 			State:   ScanRunning,
 			Total:   totalStages,
@@ -300,8 +308,8 @@ func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface,
 		})
 	})
 	s.emit(ScanProgress{
-		ID:      surfaceStageID,
-		Name:    "disk surface",
+		ID:      SurfaceStageID,
+		Name:    surfaceStageName,
 		Detail:  surfaceStageDetail,
 		State:   ScanDone,
 		Total:   totalStages,
@@ -312,8 +320,8 @@ func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface,
 		Elapsed: time.Since(started),
 	})
 
-	dataPath := dataVolumePath(surface.Mounts)
-	health := evaluateHealth(surface, dataPath)
+	dataPath := DataVolumePath(surface.Mounts)
+	health := EvaluateHealth(surface, dataPath)
 	if s.Verify {
 		verifyStarted := time.Now()
 		s.emit(ScanProgress{
@@ -324,11 +332,11 @@ func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface,
 			Total:   totalStages,
 			Started: verifyStarted,
 		})
-		signals := verifySignals(ctx, surface.Containers, dataPath)
+		signals := VerifySignals(ctx, surface.Containers, dataPath)
 		health.Signals = append(health.Signals, signals...)
 		health.Verified = true
 		for _, signal := range signals {
-			health.Level = worseLevel(health.Level, signal.Level)
+			health.Level = WorseLevel(health.Level, signal.Level)
 		}
 		s.emit(ScanProgress{
 			ID:      verifyStageID,
@@ -344,7 +352,7 @@ func (s Scanner) runSurfaceStage(ctx context.Context, totalStages int) (Surface,
 	return surface, health
 }
 
-func containerHolding(containers []Container, path string) string {
+func containerHolding(containers []storage.Container, path string) string {
 	for _, container := range containers {
 		if container.Holds(path) {
 			return container.Reference
@@ -471,7 +479,7 @@ func (s Scanner) emit(progress ScanProgress) {
 }
 
 func (s Scanner) captureCommand(ctx context.Context, command string, args ...string) (string, error) {
-	return captureCommandAs(ctx, s.CommandTimeout, s.CommandIdentity, command, args...)
+	return storage.CaptureCommandAs(ctx, s.CommandTimeout, s.CommandIdentity, command, args...)
 }
 
 func scanResultSize(result scanResult) (int64, int) {
@@ -494,17 +502,17 @@ func (s Scanner) collectHomebrew(ctx context.Context) scanResult {
 	}
 	output, err := s.captureCommand(ctx, brew, "cleanup", "--prune=all", "--dry-run")
 	if err != nil {
-		return scanResult{issues: []string{"homebrew preview: " + compactError(err)}}
+		return scanResult{issues: []string{"homebrew preview: " + storage.CompactError(err)}}
 	}
-	bytes := parseLargestSize(output)
+	bytes := storage.ParseLargestSize(output)
 	if bytes == 0 {
 		return scanResult{}
 	}
 	return scanResult{items: []Item{{
 		ID:       "homebrew-cleanup",
 		Name:     "homebrew leftovers",
-		Group:    "supported cleanup",
-		Category: CategoryDeveloper,
+		Group:    groupSupported,
+		Category: storage.CategoryDeveloper,
 		Detail:   "old bottles, cask downloads and stale formula versions, using Homebrew's own cleanup command",
 		Source:   "brew cleanup --prune=all --dry-run",
 		Risk:     RiskSafe,
@@ -531,17 +539,17 @@ func (s Scanner) collectUV(ctx context.Context) scanResult {
 			cacheDir = candidate
 		}
 	}
-	measured, err := pathUsage(ctx, cacheDir)
+	measured, err := storage.PathUsage(ctx, cacheDir)
 	if err != nil || measured.Bytes == 0 {
 		return scanResult{}
 	}
 	return scanResult{items: []Item{{
 		ID:       "uv-cache-prune",
 		Name:     "unused uv cache entries",
-		Group:    "supported cleanup",
-		Category: CategoryDeveloper,
+		Group:    groupSupported,
+		Category: storage.CategoryDeveloper,
 		Detail:   "unused package cache and disposable centralized environments, using uv's concurrency-safe prune",
-		Source:   relativeHome(s.Home, cacheDir),
+		Source:   storage.RelativeHome(s.Home, cacheDir),
 		Risk:     RiskSafe,
 		Bytes:    measured.Bytes,
 		Estimate: "current cache size, prune may reclaim less",
@@ -566,17 +574,17 @@ func (s Scanner) collectNPM(ctx context.Context) scanResult {
 			cacheDir = candidate
 		}
 	}
-	measured, err := pathUsage(ctx, cacheDir)
+	measured, err := storage.PathUsage(ctx, cacheDir)
 	if err != nil || measured.Bytes == 0 {
 		return scanResult{}
 	}
 	return scanResult{items: []Item{{
 		ID:       "npm-cache-verify",
 		Name:     "unneeded npm cache entries",
-		Group:    "supported cleanup",
-		Category: CategoryDeveloper,
+		Group:    groupSupported,
+		Category: storage.CategoryDeveloper,
 		Detail:   "integrity-checks npm's content cache and garbage-collects unneeded entries without forcing a full wipe",
-		Source:   relativeHome(s.Home, cacheDir),
+		Source:   storage.RelativeHome(s.Home, cacheDir),
 		Risk:     RiskSafe,
 		Bytes:    measured.Bytes,
 		Estimate: "current cache size, verify may reclaim less",
@@ -597,21 +605,21 @@ func (s Scanner) collectGo(ctx context.Context) scanResult {
 	}
 	output, err := s.captureCommand(ctx, goCommand, "env", "GOCACHE", "GOMODCACHE")
 	if err != nil {
-		return scanResult{issues: []string{"go cache paths: " + compactError(err)}}
+		return scanResult{issues: []string{"go cache paths: " + storage.CompactError(err)}}
 	}
 	paths := strings.Fields(output)
 	if len(paths) < 2 {
 		return scanResult{issues: []string{"go cache paths: unexpected go env output"}}
 	}
 	var items []Item
-	if measured, measureErr := pathUsage(ctx, paths[0]); measureErr == nil && measured.Bytes > 0 {
+	if measured, measureErr := storage.PathUsage(ctx, paths[0]); measureErr == nil && measured.Bytes > 0 {
 		items = append(items, Item{
 			ID:       "go-build-cache",
 			Name:     "go build and test cache",
-			Group:    "supported cleanup",
-			Category: CategoryDeveloper,
+			Group:    groupSupported,
+			Category: storage.CategoryDeveloper,
 			Detail:   "rebuildable compiler and test outputs, using go clean",
-			Source:   relativeHome(s.Home, paths[0]),
+			Source:   storage.RelativeHome(s.Home, paths[0]),
 			Risk:     RiskSafe,
 			Bytes:    measured.Bytes,
 			Estimate: "current cache size",
@@ -624,14 +632,14 @@ func (s Scanner) collectGo(ctx context.Context) scanResult {
 			},
 		})
 	}
-	if measured, measureErr := pathUsage(ctx, paths[1]); measureErr == nil && measured.Bytes > 0 {
+	if measured, measureErr := storage.PathUsage(ctx, paths[1]); measureErr == nil && measured.Bytes > 0 {
 		items = append(items, Item{
 			ID:       "go-module-cache",
 			Name:     "go module download cache",
 			Group:    "developer caches",
-			Category: CategoryDeveloper,
+			Category: storage.CategoryDeveloper,
 			Detail:   "downloaded dependency sources, rebuildable with network access but expensive to fetch again",
-			Source:   relativeHome(s.Home, paths[1]),
+			Source:   storage.RelativeHome(s.Home, paths[1]),
 			Risk:     RiskReview,
 			Bytes:    measured.Bytes,
 			Estimate: "current cache size",
@@ -654,7 +662,7 @@ func (s Scanner) collectNix(ctx context.Context) scanResult {
 	}
 	output, err := s.captureCommand(ctx, nix, "store", "gc", "--dry-run")
 	if err != nil {
-		return scanResult{issues: []string{"nix gc preview: " + compactError(err)}}
+		return scanResult{issues: []string{"nix gc preview: " + storage.CompactError(err)}}
 	}
 	count := parseNixGCCount(output)
 	if count == 0 && strings.Contains(output, "0 store paths would be deleted") {
@@ -666,8 +674,8 @@ func (s Scanner) collectNix(ctx context.Context) scanResult {
 	return scanResult{items: []Item{{
 		ID:       "nix-store-gc",
 		Name:     "unreachable nix store paths",
-		Group:    "supported cleanup",
-		Category: CategorySystemData,
+		Group:    groupSupported,
+		Category: storage.CategorySystemData,
 		Detail:   fmt.Sprintf("%d store paths with no garbage-collector root, current profiles and rollback generations remain protected", count),
 		Source:   "nix store gc --dry-run",
 		Risk:     RiskSafe,
@@ -704,7 +712,7 @@ func (s Scanner) collectDocker(ctx context.Context) scanResult {
 	if err != nil {
 		return scanResult{}
 	}
-	bytes := sumSizes(output)
+	bytes := storage.SumSizes(output)
 	if bytes == 0 {
 		return scanResult{}
 	}
@@ -712,7 +720,7 @@ func (s Scanner) collectDocker(ctx context.Context) scanResult {
 		ID:       "docker-system-prune",
 		Name:     "unused docker objects",
 		Group:    "developer caches",
-		Category: CategoryDeveloper,
+		Category: storage.CategoryDeveloper,
 		Detail:   "stopped containers, unused networks, dangling images and build cache, volumes and tagged images are kept",
 		Source:   "docker system df",
 		Risk:     RiskReview,
@@ -730,7 +738,7 @@ func (s Scanner) collectDocker(ctx context.Context) scanResult {
 
 func (s Scanner) collectTrash(ctx context.Context) scanResult {
 	trash := filepath.Join(s.Home, ".Trash")
-	measured, err := pathUsage(ctx, trash)
+	measured, err := storage.PathUsage(ctx, trash)
 	if err != nil || measured.Bytes == 0 {
 		return scanResult{}
 	}
@@ -738,12 +746,12 @@ func (s Scanner) collectTrash(ctx context.Context) scanResult {
 		ID:       "empty-trash",
 		Name:     "empty Trash permanently",
 		Group:    "irreversible",
-		Category: CategoryTrash,
+		Category: storage.CategoryTrash,
 		Detail:   "permanently deletes everything currently in ~/.Trash, including items placed there outside this tool",
 		Source:   "~/.Trash",
 		Risk:     RiskDestructive,
 		Bytes:    measured.Bytes,
-		Estimate: "allocated bytes",
+		Estimate: estimateAllocated,
 		Action: &Action{
 			Kind:      ActionEmptyTrash,
 			Paths:     []string{trash},
@@ -781,13 +789,13 @@ func (s Scanner) collectAppCaches(ctx context.Context) scanResult {
 			ID:       pathID("cache", candidate.path),
 			Name:     friendlyCacheName(filepath.Base(candidate.path)),
 			Group:    "app caches",
-			Category: CategorySystemData,
+			Category: storage.CategorySystemData,
 			Detail:   "app-owned cache, close the related app first; this is moved to Trash so it remains recoverable until Trash is emptied",
-			Source:   relativeHome(s.Home, candidate.path),
+			Source:   storage.RelativeHome(s.Home, candidate.path),
 			Risk:     RiskReview,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 			Action: &Action{
 				Kind:      ActionTrash,
 				Paths:     []string{candidate.path},
@@ -809,13 +817,13 @@ func (s Scanner) collectDownloads(ctx context.Context) scanResult {
 			ID:       pathID("download", candidate.path),
 			Name:     filepath.Base(candidate.path),
 			Group:    "large downloads",
-			Category: CategoryDocuments,
+			Category: storage.CategoryDocuments,
 			Detail:   "large top-level download, " + age + "; moved to Trash and never selected automatically",
-			Source:   relativeHome(s.Home, candidate.path),
+			Source:   storage.RelativeHome(s.Home, candidate.path),
 			Risk:     RiskReview,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 			Action: &Action{
 				Kind:      ActionTrash,
 				Paths:     []string{candidate.path},
@@ -830,7 +838,7 @@ func (s Scanner) collectDownloads(ctx context.Context) scanResult {
 func (s Scanner) collectLargeData(ctx context.Context) scanResult {
 	targets := s.categoryDataTargets()
 	excluded := make(map[string]bool, len(targets))
-	categoryByPath := make(map[string]StorageCategory, len(targets))
+	categoryByPath := make(map[string]storage.Category, len(targets))
 	nameByPath := make(map[string]string, len(targets))
 	for _, target := range targets {
 		excluded[target.path] = true
@@ -855,12 +863,12 @@ func (s Scanner) collectLargeData(ctx context.Context) scanResult {
 			continue
 		}
 		if err != nil {
-			issues = append(issues, target.path+": "+compactError(err))
+			issues = append(issues, target.path+": "+storage.CompactError(err))
 			continue
 		}
-		measured, err := pathUsage(ctx, target.path)
+		measured, err := storage.PathUsage(ctx, target.path)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			issues = append(issues, target.path+": "+compactError(err))
+			issues = append(issues, target.path+": "+storage.CompactError(err))
 			continue
 		}
 		if measured.Denied > 0 {
@@ -887,7 +895,7 @@ func (s Scanner) collectLargeData(ctx context.Context) scanResult {
 		}
 		category := categoryByPath[candidate.path]
 		if category == "" {
-			category = categoryForUserData(candidate.path)
+			category = storage.CategoryForUserData(candidate.path)
 		}
 		items = append(items, Item{
 			ID:       pathID("data", candidate.path),
@@ -895,11 +903,11 @@ func (s Scanner) collectLargeData(ctx context.Context) scanResult {
 			Group:    "protected app data",
 			Category: category,
 			Detail:   "real app data, games, downloads or account state; inspect and remove it from the owning app",
-			Source:   relativeHome(s.Home, candidate.path),
+			Source:   storage.RelativeHome(s.Home, candidate.path),
 			Risk:     RiskProtected,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 		})
 	}
 	return scanResult{items: items, issues: issues}
@@ -907,11 +915,11 @@ func (s Scanner) collectLargeData(ctx context.Context) scanResult {
 
 func (s Scanner) categoryDataTargets() []userDataTarget {
 	targets := []userDataTarget{
-		{path: filepath.Join(s.Home, "Library", "Mail"), name: "Mail data", category: CategoryMail},
-		{path: filepath.Join(s.Home, "Library", "Messages"), name: "Messages data", category: CategoryMessages},
-		{path: filepath.Join(s.Home, "Library", "Mobile Documents"), name: "iCloud Drive local data", category: CategoryICloudDrive},
-		{path: filepath.Join(s.Home, "Library", "Application Support", "MobileSync"), name: "iOS backups and firmware", category: CategoryIOSFiles},
-		{path: filepath.Join(s.Home, "Music", "Music"), name: "Music library", category: CategoryMusic},
+		{path: filepath.Join(s.Home, "Library", "Mail"), name: "Mail data", category: storage.CategoryMail},
+		{path: filepath.Join(s.Home, "Library", "Messages"), name: "Messages data", category: storage.CategoryMessages},
+		{path: filepath.Join(s.Home, "Library", "Mobile Documents"), name: "iCloud Drive local data", category: storage.CategoryICloudDrive},
+		{path: filepath.Join(s.Home, "Library", "Application Support", "MobileSync"), name: "iOS backups and firmware", category: storage.CategoryIOSFiles},
+		{path: filepath.Join(s.Home, "Music", "Music"), name: "Music library", category: storage.CategoryMusic},
 	}
 	pictures := filepath.Join(s.Home, "Pictures")
 	if entries, err := os.ReadDir(pictures); err == nil {
@@ -920,7 +928,7 @@ func (s Scanner) categoryDataTargets() []userDataTarget {
 				targets = append(targets, userDataTarget{
 					path:     filepath.Join(pictures, entry.Name()),
 					name:     entry.Name(),
-					category: CategoryPhotos,
+					category: storage.CategoryPhotos,
 				})
 			}
 		}
@@ -936,13 +944,13 @@ func (s Scanner) collectInstalledApps(ctx context.Context) scanResult {
 			ID:       pathID("app", candidate.path),
 			Name:     filepath.Base(candidate.path),
 			Group:    "installed apps",
-			Category: CategoryApplications,
+			Category: storage.CategoryApplications,
 			Detail:   "large application bundle; uninstall it through its package manager or vendor workflow",
 			Source:   candidate.path,
 			Risk:     RiskProtected,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 		})
 	}
 	return scanResult{items: items, issues: issues}
@@ -950,7 +958,7 @@ func (s Scanner) collectInstalledApps(ctx context.Context) scanResult {
 
 func (s Scanner) collectSystemData(ctx context.Context) scanResult {
 	paths := s.inventoryPaths()
-	categoryByPath := make(map[string]StorageCategory)
+	categoryByPath := make(map[string]storage.Category)
 	var candidates []pathCandidate
 	var issues []string
 	for _, root := range []string{paths.library, paths.variable} {
@@ -970,12 +978,12 @@ func (s Scanner) collectSystemData(ctx context.Context) scanResult {
 			continue
 		}
 		if err != nil {
-			issues = append(issues, target.path+": "+compactError(err))
+			issues = append(issues, target.path+": "+storage.CompactError(err))
 			continue
 		}
-		measured, err := pathUsage(ctx, target.path)
+		measured, err := storage.PathUsage(ctx, target.path)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			issues = append(issues, target.path+": "+compactError(err))
+			issues = append(issues, target.path+": "+storage.CompactError(err))
 			continue
 		}
 		if measured.Denied > 0 {
@@ -1000,7 +1008,7 @@ func (s Scanner) collectSystemData(ctx context.Context) scanResult {
 	for _, candidate := range candidates {
 		category := categoryByPath[candidate.path]
 		if category == "" {
-			category = CategorySystemData
+			category = storage.CategorySystemData
 		}
 		items = append(items, Item{
 			ID:       pathID("system", candidate.path),
@@ -1012,7 +1020,7 @@ func (s Scanner) collectSystemData(ctx context.Context) scanResult {
 			Risk:     RiskProtected,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 		})
 	}
 	return scanResult{items: items, issues: issues}
@@ -1020,12 +1028,12 @@ func (s Scanner) collectSystemData(ctx context.Context) scanResult {
 
 func (s Scanner) collectMacOS(ctx context.Context) scanResult {
 	root := s.inventoryPaths().system
-	measured, err := pathUsageExcluding(ctx, root, []string{filepath.Join(root, "Volumes")})
+	measured, err := storage.PathUsageExcluding(ctx, root, []string{filepath.Join(root, "Volumes")})
 	if errors.Is(err, os.ErrNotExist) {
 		return scanResult{}
 	}
 	if err != nil {
-		return scanResult{issues: []string{root + ": " + compactError(err)}}
+		return scanResult{issues: []string{root + ": " + storage.CompactError(err)}}
 	}
 	var issues []string
 	if measured.Denied > 0 {
@@ -1038,12 +1046,12 @@ func (s Scanner) collectMacOS(ctx context.Context) scanResult {
 		ID:       pathID("macos", root),
 		Name:     "system tree",
 		Group:    "root inventory",
-		Category: CategoryMacOS,
+		Category: storage.CategoryMacOS,
 		Detail:   "sealed macOS applications and system files",
 		Source:   root,
 		Risk:     RiskProtected,
 		Bytes:    measured.Bytes,
-		Estimate: "allocated bytes",
+		Estimate: estimateAllocated,
 	}}, issues: issues}
 }
 
@@ -1057,13 +1065,13 @@ func (s Scanner) collectOtherUsers(ctx context.Context) scanResult {
 			ID:       pathID("other-user", candidate.path),
 			Name:     filepath.Base(candidate.path),
 			Group:    "root inventory",
-			Category: CategoryOtherUsers,
+			Category: storage.CategoryOtherUsers,
 			Detail:   "allocated blocks owned by another user or shared at system scope",
 			Source:   candidate.path,
 			Risk:     RiskProtected,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 		})
 	}
 	return scanResult{items: items, issues: issues}
@@ -1079,25 +1087,25 @@ func (s Scanner) inventoryPaths() rootInventoryPaths {
 		system:   "/System",
 		users:    "/Users",
 		fixed: []inventoryTarget{
-			{path: "/nix/store", category: CategorySystemData},
-			{path: "/opt/homebrew", category: CategoryDeveloper},
-			{path: "/usr/local", category: CategoryDeveloper},
+			{path: "/nix/store", category: storage.CategorySystemData},
+			{path: "/opt/homebrew", category: storage.CategoryDeveloper},
+			{path: "/usr/local", category: storage.CategoryDeveloper},
 		},
 	}
 }
 
-func systemCategory(path, libraryRoot string) StorageCategory {
+func systemCategory(path, libraryRoot string) storage.Category {
 	relative, err := filepath.Rel(libraryRoot, path)
 	if err == nil && relative != "." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		first := strings.Split(relative, string(filepath.Separator))[0]
 		switch first {
 		case "Developer":
-			return CategoryDeveloper
+			return storage.CategoryDeveloper
 		case "Audio":
-			return CategoryMusicCreate
+			return storage.CategoryMusicCreate
 		}
 	}
-	return CategorySystemData
+	return storage.CategorySystemData
 }
 
 func systemInventoryName(path string, roots rootInventoryPaths) string {
@@ -1146,7 +1154,7 @@ func (s Scanner) collectBuildArtifacts(ctx context.Context) scanResult {
 			if kind == "" {
 				return nil
 			}
-			measured, err := pathUsage(ctx, path)
+			measured, err := storage.PathUsage(ctx, path)
 			if err == nil && measured.Bytes >= s.ArtifactMinimum {
 				info, _ := entry.Info()
 				candidate := pathCandidate{path: path, bytes: measured.Bytes, denied: measured.Denied}
@@ -1158,7 +1166,7 @@ func (s Scanner) collectBuildArtifacts(ctx context.Context) scanResult {
 			return filepath.SkipDir
 		})
 		if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
-			issues = append(issues, "deep scan "+relativeHome(s.Home, root)+": "+compactError(walkErr))
+			issues = append(issues, "deep scan "+storage.RelativeHome(s.Home, root)+": "+storage.CompactError(walkErr))
 		}
 	}
 	sortCandidates(candidates)
@@ -1168,18 +1176,18 @@ func (s Scanner) collectBuildArtifacts(ctx context.Context) scanResult {
 	items := make([]Item, 0, len(candidates))
 	for _, candidate := range candidates {
 		kind := buildArtifactKind(candidate.path)
-		project := relativeHome(s.Home, filepath.Dir(candidate.path))
+		project := storage.RelativeHome(s.Home, filepath.Dir(candidate.path))
 		items = append(items, Item{
 			ID:       pathID("build", candidate.path),
 			Name:     kind + " in " + project,
 			Group:    "project build state",
-			Category: CategoryDeveloper,
+			Category: storage.CategoryDeveloper,
 			Detail:   "rebuildable project-local state, moved to Trash so the project can be checked before permanent deletion",
-			Source:   relativeHome(s.Home, candidate.path),
+			Source:   storage.RelativeHome(s.Home, candidate.path),
 			Risk:     RiskReview,
 			Bytes:    candidate.bytes,
 			Modified: optionalTime(candidate.modified),
-			Estimate: "allocated bytes",
+			Estimate: estimateAllocated,
 			Action: &Action{
 				Kind:      ActionTrash,
 				Paths:     []string{candidate.path},
@@ -1197,7 +1205,7 @@ func largestChildren(ctx context.Context, root string, minimum int64, limit int,
 		return nil, nil
 	}
 	if err != nil {
-		return nil, []string{relativeHome(filepath.Dir(filepath.Dir(root)), root) + ": " + compactError(err)}
+		return nil, []string{storage.RelativeHome(filepath.Dir(filepath.Dir(root)), root) + ": " + storage.CompactError(err)}
 	}
 	type candidateResult struct {
 		candidate pathCandidate
@@ -1216,7 +1224,7 @@ func largestChildren(ctx context.Context, root string, minimum int64, limit int,
 			defer wait.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			measured, measureErr := pathUsage(ctx, path)
+			measured, measureErr := storage.PathUsage(ctx, path)
 			candidate := pathCandidate{path: path, bytes: measured.Bytes, denied: measured.Denied}
 			if info, infoErr := entry.Info(); infoErr == nil {
 				candidate.modified = info.ModTime()
@@ -1232,7 +1240,7 @@ func largestChildren(ctx context.Context, root string, minimum int64, limit int,
 	var denied int64
 	for result := range results {
 		if result.err != nil && !errors.Is(result.err, context.Canceled) {
-			issues = append(issues, result.candidate.path+": "+compactError(result.err))
+			issues = append(issues, result.candidate.path+": "+storage.CompactError(result.err))
 			continue
 		}
 		if result.candidate.bytes >= minimum {
@@ -1323,50 +1331,4 @@ func friendlyDataName(name string) string {
 		return friendly
 	}
 	return name
-}
-
-func categoryForUserData(path string) StorageCategory {
-	lower := strings.ToLower(filepath.Clean(path))
-	switch {
-	case strings.Contains(lower, "clouddocs"), strings.Contains(lower, "mobile documents"):
-		return CategoryICloudDrive
-	case strings.Contains(lower, "mobilesync"):
-		return CategoryIOSFiles
-	case strings.Contains(lower, string(filepath.Separator)+"mail"):
-		return CategoryMail
-	case strings.Contains(lower, "messages"), strings.Contains(lower, "imessage"):
-		return CategoryMessages
-	case strings.Contains(lower, "garageband"), strings.Contains(lower, "logic"), strings.Contains(lower, "mainstage"):
-		return CategoryMusicCreate
-	case strings.Contains(lower, "photos"), strings.HasSuffix(lower, ".photoslibrary"):
-		return CategoryPhotos
-	default:
-		return CategorySystemData
-	}
-}
-
-func compactError(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := strings.TrimSpace(err.Error())
-	if index := strings.IndexByte(text, '\n'); index >= 0 {
-		text = text[:index]
-	}
-	return text
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
 }

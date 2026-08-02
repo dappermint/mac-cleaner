@@ -39,6 +39,7 @@
               gopls
               gotools
               golangci-lint
+              goreleaser
               just
               nixfmt
               deadnix

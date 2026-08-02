@@ -66,13 +66,20 @@ environment.systemPackages = [ inputs.mac-cleaner.packages.${system}.default ];
 
 ## develop
 
-`direnv allow` picks up the dev shell. Then `just` lists everything.
+`direnv allow` picks up the dev shell, or `nix develop` if you would rather not.
+Then `just` lists everything and `just verify` runs exactly what CI runs.
 
-```sh
-just check        # fmt, vet, test
-just surface      # run the accounting against your own disk
-just nix-check    # every flake output evaluates and builds
 ```
+cmd/mac-cleaner      entry point
+internal/storage     allocated blocks, mounts, APFS containers, SMART
+internal/scan        items, risk, the surface walker, health signals
+internal/tui         renderer, the three views, key handling
+internal/text        display primitives
+internal/cli         subcommands and non-interactive printers
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the invariants the tests
+protect, and how to add a cleanup action.
 
 ## licence
 

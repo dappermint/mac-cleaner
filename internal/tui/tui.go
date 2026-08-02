@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"bufio"
@@ -13,7 +13,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
+
+	"github.com/dappermint/mac-cleaner/internal/scan"
+	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/mac-cleaner/internal/text"
 )
 
 const (
@@ -22,6 +25,15 @@ const (
 	ansiClear      = "\x1b[2J\x1b[H"
 	ansiHideCursor = "\x1b[?25l"
 	ansiShowCursor = "\x1b[?25h"
+)
+
+const (
+	colorInk   = "ink"
+	colorFog   = "fog"
+	colorCyan  = "cyan"
+	colorMint  = "mint"
+	colorAmber = "amber"
+	colorCoral = "coral"
 )
 
 var tuiColors = map[string]string{
@@ -33,7 +45,7 @@ var tuiColors = map[string]string{
 	"coral": "\x1b[38;2;251;113;133m",
 }
 
-var tuiFilters = []Risk{"", RiskSafe, RiskReview, RiskDestructive, RiskProtected}
+var tuiFilters = []scan.Risk{"", scan.RiskSafe, scan.RiskReview, scan.RiskDestructive, scan.RiskProtected}
 
 type rawTerminal struct {
 	saved string
@@ -71,21 +83,21 @@ type launchState struct {
 	label   string
 	started time.Time
 	order   []string
-	stages  map[string]ScanProgress
-	disk    Disk
+	stages  map[string]scan.ScanProgress
+	disk    storage.Disk
 	color   bool
 	rootful bool
 }
 
-func tuiScanOptions(rootful bool) scanOptions {
-	return scanOptions{deep: true, rootful: rootful, surface: true}
+func tuiScanOptions(rootful bool) scan.Options {
+	return scan.Options{Deep: true, Rootful: rootful, Surface: true}
 }
 
-func scanWithLaunch(ctx context.Context, home string, options scanOptions, identity *commandIdentity, renderer *screenRenderer, resize <-chan os.Signal, label string) (Report, error) {
-	updates := make(chan ScanProgress, 64)
-	reports := make(chan Report, 1)
-	scanner := configuredScanner(home, options, identity)
-	scanner.Progress = func(progress ScanProgress) {
+func scanWithLaunch(ctx context.Context, home string, options scan.Options, identity *storage.CommandIdentity, renderer *screenRenderer, resize <-chan os.Signal, label string) (scan.Report, error) {
+	updates := make(chan scan.ScanProgress, 64)
+	reports := make(chan scan.Report, 1)
+	scanner := scan.Configure(home, options, identity)
+	scanner.Progress = func(progress scan.ScanProgress) {
 		select {
 		case updates <- progress:
 		case <-ctx.Done():
@@ -94,9 +106,9 @@ func scanWithLaunch(ctx context.Context, home string, options scanOptions, ident
 	state := launchState{
 		label:   label,
 		started: time.Now(),
-		stages:  make(map[string]ScanProgress),
+		stages:  make(map[string]scan.ScanProgress),
 		color:   os.Getenv("NO_COLOR") == "",
-		rootful: options.rootful,
+		rootful: options.Rootful,
 	}
 
 	state.render(renderer)
@@ -127,7 +139,7 @@ func scanWithLaunch(ctx context.Context, home string, options scanOptions, ident
 				default:
 					state.render(renderer)
 					if ctx.Err() != nil {
-						return Report{}, ctx.Err()
+						return scan.Report{}, ctx.Err()
 					}
 					return report, nil
 				}
@@ -138,13 +150,13 @@ func scanWithLaunch(ctx context.Context, home string, options scanOptions, ident
 			renderer.Resize()
 			state.render(renderer)
 		case <-ctx.Done():
-			return Report{}, ctx.Err()
+			return scan.Report{}, ctx.Err()
 		}
 	next:
 	}
 }
 
-func (state *launchState) apply(progress ScanProgress) {
+func (state *launchState) apply(progress scan.ScanProgress) {
 	if _, exists := state.stages[progress.ID]; !exists {
 		state.order = append(state.order, progress.ID)
 	}
@@ -163,28 +175,28 @@ func (state *launchState) render(renderer *screenRenderer) {
 	hostname, _ := os.Hostname()
 	title := "mac-cleaner"
 	if hostname != "" {
-		title += " / " + cleanDisplay(hostname)
+		title += " / " + text.Clean(hostname)
 	}
 	scope := "user"
 	if state.rootful {
 		scope = "root"
 	}
 	lines := []string{
-		state.bold("cyan", truncate(joinEdges(title, "scan / "+scope, width), width)),
-		state.paint("ink", truncate(joinEdges(state.label, "elapsed "+formatDuration(now.Sub(state.started)), width), width)),
+		state.bold(colorCyan, text.Truncate(text.JoinEdges(title, "scan / "+scope, width), width)),
+		state.paint(colorInk, text.Truncate(text.JoinEdges(state.label, "elapsed "+text.Duration(now.Sub(state.started)), width), width)),
 	}
 
 	if state.disk.Total > 0 {
 		freePercent := float64(state.disk.Free) / float64(state.disk.Total) * 100
 		pressure := spaceLabel(freePercent)
-		diskLine := fmt.Sprintf("%s free of %s  %s", humanBytes(state.disk.Free), humanBytes(state.disk.Total), pressure)
-		lines = append(lines, state.paint(spaceColor(freePercent), truncate(diskLine, width)))
+		diskLine := fmt.Sprintf("%s free of %s  %s", storage.HumanBytes(state.disk.Free), storage.HumanBytes(state.disk.Total), pressure)
+		lines = append(lines, state.paint(spaceColor(freePercent), text.Truncate(diskLine, width)))
 		rail := (&tuiState{color: state.color}).storageRail(width, state.disk.Free, state.disk.Total, 0)
 		lines = append(lines, rail)
 	} else {
 		lines = append(lines,
-			state.paint("fog", truncate("reading physical capacity from the data volume", width)),
-			state.paint("fog", strings.Repeat("·", width)),
+			state.paint(colorFog, text.Truncate("reading physical capacity from the data volume", width)),
+			state.paint(colorFog, strings.Repeat("·", width)),
 		)
 	}
 
@@ -193,7 +205,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 	if running > 0 {
 		progressLine += fmt.Sprintf("  running=%d", running)
 	}
-	lines = append(lines, state.paint("fog", truncate(progressLine, width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate(progressLine, width)))
 
 	stageRows := height - len(lines) - 1
 	if stageRows < 1 {
@@ -206,7 +218,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 		lines = append(lines, "")
 	}
 	footer := "read-only scan  ctrl-c abort"
-	lines = append(lines, state.paint("fog", truncate(footer, width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate(footer, width)))
 	if len(lines) > height {
 		lines = lines[:height]
 	}
@@ -216,9 +228,9 @@ func (state *launchState) render(renderer *screenRenderer) {
 func (state *launchState) counts() (done, running int) {
 	for _, progress := range state.stages {
 		switch progress.State {
-		case ScanDone:
+		case scan.ScanDone:
 			done++
-		case ScanRunning:
+		case scan.ScanRunning:
 			running++
 		}
 	}
@@ -231,7 +243,7 @@ func (state *launchState) visibleStages(limit int) []string {
 	}
 	focus := 0
 	for index, id := range state.order {
-		if state.stages[id].State != ScanQueued {
+		if state.stages[id].State != scan.ScanQueued {
 			focus = index
 		}
 	}
@@ -245,32 +257,32 @@ func (state *launchState) visibleStages(limit int) []string {
 	return state.order[start : start+limit]
 }
 
-func (state *launchState) stageLine(progress ScanProgress, now time.Time, width int) string {
+func (state *launchState) stageLine(progress scan.ScanProgress, now time.Time, width int) string {
 	prefix := "·"
-	color := "fog"
+	color := colorFog
 	summary := progress.Detail
 	switch progress.State {
-	case ScanRunning:
+	case scan.ScanRunning:
 		prefix = "●"
-		color = "cyan"
+		color = colorCyan
 		if progress.Items > 0 || progress.Bytes > 0 {
-			summary = fmt.Sprintf("%s files / %s so far", humanCount(progress.Items), humanBytes(progress.Bytes))
+			summary = fmt.Sprintf("%s files / %s so far", text.Count(progress.Items), storage.HumanBytes(progress.Bytes))
 		}
-	case ScanDone:
+	case scan.ScanDone:
 		prefix = "✓"
-		color = "mint"
+		color = colorMint
 		summary = completedStageSummary(progress)
 	}
 	elapsed := ""
-	if progress.State == ScanRunning && !progress.Started.IsZero() {
-		elapsed = formatDuration(now.Sub(progress.Started))
-	} else if progress.State == ScanDone {
-		elapsed = formatDuration(progress.Elapsed)
+	if progress.State == scan.ScanRunning && !progress.Started.IsZero() {
+		elapsed = text.Duration(now.Sub(progress.Started))
+	} else if progress.State == scan.ScanDone {
+		elapsed = text.Duration(progress.Elapsed)
 	}
 
 	if width < 44 {
 		plain := fmt.Sprintf("%s %s  %s", prefix, progress.Name, summary)
-		return state.paint(color, truncate(plain, width))
+		return state.paint(color, text.Truncate(plain, width))
 	}
 	nameWidth := 15
 	elapsedWidth := 7
@@ -279,28 +291,17 @@ func (state *launchState) stageLine(progress ScanProgress, now time.Time, width 
 		summaryWidth = 1
 	}
 	return state.paint(color, prefix) + " " +
-		state.paint(color, padRight(truncate(progress.Name, nameWidth), nameWidth)) + "  " +
-		state.paint("fog", padRight(truncate(summary, summaryWidth), summaryWidth)) + " " +
-		state.paint(color, padLeft(elapsed, elapsedWidth))
+		state.paint(color, text.PadRight(text.Truncate(progress.Name, nameWidth), nameWidth)) + "  " +
+		state.paint(colorFog, text.PadRight(text.Truncate(summary, summaryWidth), summaryWidth)) + " " +
+		state.paint(color, text.PadLeft(elapsed, elapsedWidth))
 }
 
-func humanCount(value int) string {
-	switch {
-	case value >= 1000000:
-		return fmt.Sprintf("%.1fM", float64(value)/1000000)
-	case value >= 1000:
-		return fmt.Sprintf("%.1fk", float64(value)/1000)
-	default:
-		return strconv.Itoa(value)
-	}
-}
-
-func completedStageSummary(progress ScanProgress) string {
+func completedStageSummary(progress scan.ScanProgress) string {
 	if progress.ID == "volume" && progress.Disk != nil {
-		return humanBytes(progress.Disk.Total) + " mapped"
+		return storage.HumanBytes(progress.Disk.Total) + " mapped"
 	}
-	if progress.ID == surfaceStageID {
-		return fmt.Sprintf("%s files / %s accounted", humanCount(progress.Items), humanBytes(progress.Bytes))
+	if progress.ID == scan.SurfaceStageID {
+		return fmt.Sprintf("%s files / %s accounted", text.Count(progress.Items), storage.HumanBytes(progress.Bytes))
 	}
 	if progress.Issues > 0 && progress.Items == 0 {
 		return fmt.Sprintf("notes=%d", progress.Issues)
@@ -310,7 +311,7 @@ func completedStageSummary(progress ScanProgress) string {
 	}
 	parts := []string{fmt.Sprintf("items=%d", progress.Items)}
 	if progress.Bytes > 0 {
-		parts = append(parts, humanBytes(progress.Bytes))
+		parts = append(parts, storage.HumanBytes(progress.Bytes))
 	}
 	if progress.Unknown > 0 {
 		parts = append(parts, fmt.Sprintf("unknown=%d", progress.Unknown))
@@ -351,7 +352,7 @@ func (v tuiView) String() string {
 }
 
 type tuiState struct {
-	report      Report
+	report      scan.Report
 	selected    map[string]bool
 	view        tuiView
 	cursors     [3]int
@@ -379,7 +380,7 @@ func (state *tuiState) setOffset(value int) {
 	state.offsets[state.view] = value
 }
 
-func runTUI(ctx context.Context, home string, rootful bool, identity *commandIdentity, out io.Writer) error {
+func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, out io.Writer) error {
 	renderer := newScreenRenderer(out)
 	renderer.Enter()
 	defer renderer.Exit()
@@ -471,7 +472,7 @@ func runTUI(ctx context.Context, home string, rootful bool, identity *commandIde
 			case "?":
 				state.showHelp(renderer)
 			case "c":
-				items := selectedItems(state.report, state.selected)
+				items := scan.SelectedItems(state.report, state.selected)
 				if len(items) == 0 {
 					state.notice = "mark=0"
 					break
@@ -492,8 +493,8 @@ func runTUI(ctx context.Context, home string, rootful bool, identity *commandIde
 					state.notice = "unchanged"
 					break
 				}
-				results := executeItems(ctx, home, items, false, out)
-				if err := actionErrors(results); err != nil {
+				results := scan.ExecuteItems(ctx, home, items, false, out)
+				if err := scan.ActionErrors(results); err != nil {
 					fmt.Fprintf(out, "\n%s\n", err)
 				}
 				fmt.Fprint(out, "\nenter: rescan ")
@@ -556,7 +557,7 @@ func readKeyStream(ctx context.Context) (<-chan keyResult, chan<- struct{}) {
 	return keys, resume
 }
 
-func (state *tuiState) reset(report Report) {
+func (state *tuiState) reset(report scan.Report) {
 	state.report = report
 	state.selected = make(map[string]bool)
 	state.cursors = [3]int{}
@@ -605,11 +606,11 @@ func (state *tuiState) render(renderer *screenRenderer) {
 		lines = append(lines, "")
 	}
 	if inspectorLines > 0 {
-		lines = append(lines, state.paint("fog", strings.Repeat("─", width)))
+		lines = append(lines, state.paint(colorFog, strings.Repeat("─", width)))
 		lines = append(lines, state.inspectorLines(width, inspectorLines)...)
 	}
 	lines = append(lines, state.statusLine(width))
-	lines = append(lines, state.paint("fog", truncate(keyGuide(width, state.view), width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate(keyGuide(width, state.view), width)))
 	if len(lines) > height {
 		lines = lines[:height]
 	}
@@ -620,16 +621,16 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	hostname, _ := os.Hostname()
 	title := "mac-cleaner"
 	if hostname != "" {
-		title += " / " + cleanDisplay(hostname)
+		title += " / " + text.Clean(hostname)
 	}
 	scope := "user"
 	if state.rootful {
 		scope = "root"
 	}
-	lines := []string{state.bold("cyan", truncate(joinEdges(title, state.view.String()+" / "+scope, width), width))}
+	lines := []string{state.bold(colorCyan, text.Truncate(text.JoinEdges(title, state.view.String()+" / "+scope, width), width))}
 
-	chosen := selectedItems(state.report, state.selected)
-	direct, toTrash, _ := selectionTotals(chosen)
+	chosen := scan.SelectedItems(state.report, state.selected)
+	direct, toTrash, _ := scan.SelectionTotals(chosen)
 	lines = append(lines, state.capacityLine(width, direct))
 	lines = append(lines, state.capacityRail(width, direct))
 
@@ -649,7 +650,7 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 		lines = append(lines, state.filterLine(state.filteredIndices(), width))
 		lines = append(lines, state.tableHeader(width))
 	case viewSurface:
-		lines = append(lines, state.paint("fog", truncate(surfaceLegend(state.report), width)))
+		lines = append(lines, state.paint(colorFog, text.Truncate(surfaceLegend(state.report), width)))
 	}
 	return lines
 }
@@ -657,23 +658,23 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 func (state *tuiState) capacityLine(width int, reclaim int64) string {
 	disk := state.report.Disk
 	if disk.Total <= 0 {
-		return state.paint("fog", truncate("physical disk capacity unavailable", width))
+		return state.paint(colorFog, text.Truncate("physical disk capacity unavailable", width))
 	}
 	freePercent := float64(disk.Free) / float64(disk.Total) * 100
 	label := "disk"
 	if disk.Container != "" {
 		label = disk.Container
 	}
-	line := fmt.Sprintf("%s  %s capacity  %s free  %s", label, humanBytes(disk.Total), humanBytes(disk.Free), spaceLabel(freePercent))
+	line := fmt.Sprintf("%s  %s capacity  %s free  %s", label, storage.HumanBytes(disk.Total), storage.HumanBytes(disk.Free), spaceLabel(freePercent))
 	if disk.InUse > 0 {
 		line = fmt.Sprintf("%s  %s capacity  data %s  other %s  free %s  %s",
-			label, humanBytes(disk.Total), humanBytes(disk.InUse),
-			humanBytes(disk.Total-disk.Free-disk.InUse), humanBytes(disk.Free), spaceLabel(freePercent))
+			label, storage.HumanBytes(disk.Total), storage.HumanBytes(disk.InUse),
+			storage.HumanBytes(disk.Total-disk.Free-disk.InUse), storage.HumanBytes(disk.Free), spaceLabel(freePercent))
 	}
 	if reclaim > 0 {
-		line += "  reclaim=" + humanBytes(reclaim)
+		line += "  reclaim=" + storage.HumanBytes(reclaim)
 	}
-	return state.paint(spaceColor(freePercent), truncate(line, width))
+	return state.paint(spaceColor(freePercent), text.Truncate(line, width))
 }
 
 func (state *tuiState) capacityRail(width int, reclaim int64) string {
@@ -684,7 +685,7 @@ func (state *tuiState) capacityRail(width int, reclaim int64) string {
 	return state.containerRail(width, *container, reclaim)
 }
 
-func (state *tuiState) activeContainer() *Container {
+func (state *tuiState) activeContainer() *storage.Container {
 	if state.report.Surface == nil {
 		return nil
 	}
@@ -696,7 +697,7 @@ func (state *tuiState) activeContainer() *Container {
 	return nil
 }
 
-func (state *tuiState) containerRail(width int, container Container, reclaim int64) string {
+func (state *tuiState) containerRail(width int, container storage.Container, reclaim int64) string {
 	if width <= 0 || container.Ceiling <= 0 {
 		return ""
 	}
@@ -711,21 +712,21 @@ func (state *tuiState) containerRail(width int, container Container, reclaim int
 		if volume.InUse <= 0 {
 			continue
 		}
-		if hasRole(volume, "Data") {
+		if scan.HasRole(volume, "Data") {
 			claimed := volume.InUse
 			if reclaim > claimed {
 				reclaim = claimed
 			}
 			segments = append(segments,
 				segment{bytes: claimed - reclaim, glyph: "█", color: spaceColor(freePercent)},
-				segment{bytes: reclaim, glyph: "▓", color: "mint"},
+				segment{bytes: reclaim, glyph: "▓", color: colorMint},
 			)
 			continue
 		}
-		segments = append(segments, segment{bytes: volume.InUse, glyph: "▓", color: "fog"})
+		segments = append(segments, segment{bytes: volume.InUse, glyph: "▓", color: colorFog})
 	}
 	if unattributed := container.Unattributed(); unattributed > 0 {
-		segments = append(segments, segment{bytes: unattributed, glyph: "▒", color: "amber"})
+		segments = append(segments, segment{bytes: unattributed, glyph: "▒", color: colorAmber})
 	}
 
 	var rendered strings.Builder
@@ -745,23 +746,23 @@ func (state *tuiState) containerRail(width int, container Container, reclaim int
 		used += cells
 	}
 	if used < width {
-		rendered.WriteString(state.paint("fog", strings.Repeat("░", width-used)))
+		rendered.WriteString(state.paint(colorFog, strings.Repeat("░", width-used)))
 	}
 	return rendered.String()
 }
 
-func surfaceLegend(report Report) string {
+func surfaceLegend(report scan.Report) string {
 	if report.Surface == nil {
 		return "no surface measurement in this report"
 	}
 	surface := report.Surface
 	parts := []string{
-		"walked=" + humanBytes(surface.Walked),
-		"files=" + humanCount(int(surface.Files)),
-		"in=" + formatDuration(surface.Elapsed),
+		"walked=" + storage.HumanBytes(surface.Walked),
+		"files=" + text.Count(int(surface.Files)),
+		"in=" + text.Duration(surface.Elapsed),
 	}
 	if surface.Claimed > surface.Walked {
-		parts = append(parts, "unaccounted="+humanBytes(surface.Claimed-surface.Walked))
+		parts = append(parts, "unaccounted="+storage.HumanBytes(surface.Claimed-surface.Walked))
 	}
 	if surface.Denied > 0 {
 		parts = append(parts, fmt.Sprintf("unreadable=%d", surface.Denied))
@@ -771,31 +772,31 @@ func surfaceLegend(report Report) string {
 
 func (state *tuiState) surfaceSummary(width int) string {
 	if state.report.Surface == nil {
-		return state.paint("fog", truncate("run with --surface to account for every byte", width))
+		return state.paint(colorFog, text.Truncate("run with --surface to account for every byte", width))
 	}
 	surface := state.report.Surface
 	covered := float64(100)
 	if surface.Claimed > 0 {
 		covered = float64(surface.Walked) / float64(surface.Claimed) * 100
 	}
-	color := "mint"
+	color := colorMint
 	if covered < 95 {
-		color = "amber"
+		color = colorAmber
 	}
-	line := fmt.Sprintf("data volume explained %.1f%%  %s of %s", covered, humanBytes(surface.Walked), humanBytes(surface.Claimed))
-	return state.paint(color, truncate(line, width))
+	line := fmt.Sprintf("data volume explained %.1f%%  %s of %s", covered, storage.HumanBytes(surface.Walked), storage.HumanBytes(surface.Claimed))
+	return state.paint(color, text.Truncate(line, width))
 }
 
 func (state *tuiState) healthSummary(width int) string {
 	if state.report.Health == nil {
-		return state.paint("fog", truncate("no health signals were gathered", width))
+		return state.paint(colorFog, text.Truncate("no health signals were gathered", width))
 	}
 	health := *state.report.Health
 	line := "filesystem " + string(health.Level) + "  " + health.Summary()
 	if !health.Verified {
 		line += "  no live verify"
 	}
-	return state.paint(healthColor(health.Level), truncate(line, width))
+	return state.paint(healthColor(health.Level), text.Truncate(line, width))
 }
 
 func (state *tuiState) rowCount() int {
@@ -817,7 +818,7 @@ func (state *tuiState) bodyLines(width, visibleRows int) []string {
 	case viewSurface:
 		rows := state.surfaceRows()
 		if len(rows) == 0 {
-			return []string{state.paint("fog", truncate("  no surface was measured", width))}
+			return []string{state.paint(colorFog, text.Truncate("  no surface was measured", width))}
 		}
 		for position := offset; position < len(rows) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.surfaceLine(rows[position], position == cursor, width))
@@ -825,7 +826,7 @@ func (state *tuiState) bodyLines(width, visibleRows int) []string {
 	case viewHealth:
 		rows := state.healthRows()
 		if len(rows) == 0 {
-			return []string{state.paint("fog", truncate("  no health signals were gathered", width))}
+			return []string{state.paint(colorFog, text.Truncate("  no health signals were gathered", width))}
 		}
 		for position := offset; position < len(rows) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.healthLine(rows[position], position == cursor, width))
@@ -833,7 +834,7 @@ func (state *tuiState) bodyLines(width, visibleRows int) []string {
 	default:
 		indices := state.filteredIndices()
 		if len(indices) == 0 {
-			return []string{state.paint("fog", truncate("  no rows", width))}
+			return []string{state.paint(colorFog, text.Truncate("  no rows", width))}
 		}
 		for position := offset; position < len(indices) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.itemLine(state.report.Items[indices[position]], position == cursor, width))
@@ -876,11 +877,11 @@ func (state *tuiState) filteredIndices() []int {
 	return indices
 }
 
-func (state *tuiState) focusedItem() (Item, bool) {
+func (state *tuiState) focusedItem() (scan.Item, bool) {
 	indices := state.filteredIndices()
 	cursor := state.cursors[viewActions]
 	if cursor < 0 || cursor >= len(indices) {
-		return Item{}, false
+		return scan.Item{}, false
 	}
 	return state.report.Items[indices[cursor]], true
 }
@@ -925,131 +926,131 @@ func (state *tuiState) adjustOffset(count, visibleRows int) {
 	}
 }
 
-func (state *tuiState) selectionLine(chosen []Item, direct, toTrash int64, width int) string {
+func (state *tuiState) selectionLine(chosen []scan.Item, direct, toTrash int64, width int) string {
 	parts := []string{
 		fmt.Sprintf("mark=%d", len(chosen)),
-		"reclaim=" + humanBytes(direct),
-		"trash=" + humanBytes(toTrash),
+		"reclaim=" + storage.HumanBytes(direct),
+		"trash=" + storage.HumanBytes(toTrash),
 	}
-	if unknown := unknownSizeCount(chosen); unknown > 0 {
+	if unknown := scan.UnknownSizeCount(chosen); unknown > 0 {
 		parts = append(parts, fmt.Sprintf("unknown=%d", unknown))
 	}
-	color := "fog"
+	color := colorFog
 	if len(chosen) > 0 {
-		color = "mint"
+		color = colorMint
 	}
-	return state.paint(color, truncate(strings.Join(parts, "  "), width))
+	return state.paint(color, text.Truncate(strings.Join(parts, "  "), width))
 }
 
 func (state *tuiState) filterLine(indices []int, width int) string {
 	label := filterLabel(tuiFilters[state.filterIndex])
 	plain := fmt.Sprintf("risk=%s  items=%d  %s", label, len(indices), riskSummary(state.report))
-	return state.paint("fog", truncate(plain, width))
+	return state.paint(colorFog, text.Truncate(plain, width))
 }
 
 func (state *tuiState) tableHeader(width int) string {
 	if width < 52 {
-		return state.paint("fog", truncate("      size  item", width))
+		return state.paint(colorFog, text.Truncate("      size  item", width))
 	}
 	categoryWidth := 14
 	if width >= 80 {
 		categoryWidth = 20
 	}
-	header := "      " + padRight("category", categoryWidth) + " " + padLeft("size", 9) + "  item"
-	return state.paint("fog", truncate(header, width))
+	header := "      " + text.PadRight("category", categoryWidth) + " " + text.PadLeft("size", 9) + "  item"
+	return state.paint(colorFog, text.Truncate(header, width))
 }
 
-func (state *tuiState) itemLine(item Item, focused bool, width int) string {
+func (state *tuiState) itemLine(item scan.Item, focused bool, width int) string {
 	if width < 24 {
-		return state.narrowLine(focused, riskColor(item.Risk), item.Name+" "+humanBytes(item.Bytes), width)
+		return state.narrowLine(focused, riskColor(item.Risk), item.Name+" "+storage.HumanBytes(item.Bytes), width)
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint("cyan", "›")
+		cursor = state.paint(colorCyan, "›")
 	}
 	mark := " · "
 	if item.Selectable() {
 		mark = "[ ]"
 		if state.selected[item.ID] {
-			mark = state.paint("mint", "[x]")
+			mark = state.paint(colorMint, "[x]")
 		}
 	}
-	size := padLeft(humanBytes(item.Bytes), 9)
+	size := text.PadLeft(storage.HumanBytes(item.Bytes), 9)
 	if width < 52 {
 		nameWidth := width - 17
 		if nameWidth < 1 {
 			nameWidth = 1
 		}
-		return cursor + " " + mark + " " + size + "  " + truncate(cleanDisplay(item.Name), nameWidth)
+		return cursor + " " + mark + " " + size + "  " + text.Truncate(text.Clean(item.Name), nameWidth)
 	}
 	categoryWidth := 14
 	if width >= 80 {
 		categoryWidth = 20
 	}
-	badge := state.paint(riskColor(item.Risk), padRight(truncate(displayCategory(item.Category), categoryWidth), categoryWidth))
+	badge := state.paint(riskColor(item.Risk), text.PadRight(text.Truncate(storage.DisplayCategory(item.Category), categoryWidth), categoryWidth))
 	nameWidth := width - categoryWidth - 18
 	if nameWidth < 1 {
 		nameWidth = 1
 	}
-	return cursor + " " + mark + " " + badge + " " + size + "  " + truncate(cleanDisplay(item.Name), nameWidth)
+	return cursor + " " + mark + " " + badge + " " + size + "  " + text.Truncate(text.Clean(item.Name), nameWidth)
 }
 
 func (state *tuiState) inspector(width, lineCount int) []string {
 	item, ok := state.focusedItem()
 	if !ok {
-		lines := []string{state.paint("fog", truncate("no rows", width))}
+		lines := []string{state.paint(colorFog, text.Truncate("no rows", width))}
 		for len(lines) < lineCount {
 			lines = append(lines, "")
 		}
 		return lines
 	}
-	meta := humanBytes(item.Bytes) + " / " + displayCategory(item.Category) + " / " + string(item.Risk)
-	lines := []string{state.bold("ink", truncate(joinEdges(cleanDisplay(item.Name), meta, width), width))}
+	meta := storage.HumanBytes(item.Bytes) + " / " + storage.DisplayCategory(item.Category) + " / " + string(item.Risk)
+	lines := []string{state.bold(colorInk, text.Truncate(text.JoinEdges(text.Clean(item.Name), meta, width), width))}
 	if lineCount == 1 {
 		return lines
 	}
 	if lineCount == 2 {
 		summary := "source " + inspectorSource(item) + "  /  " + inspectorAction(item)
-		return append(lines, state.paint("fog", truncate(summary, width)))
+		return append(lines, state.paint(colorFog, text.Truncate(summary, width)))
 	}
-	lines = append(lines, state.paint("fog", truncate(cleanDisplay(item.Detail), width)))
-	lines = append(lines, state.paint("fog", truncate("source  "+inspectorSource(item), width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate(text.Clean(item.Detail), width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate("source  "+inspectorSource(item), width)))
 	if len(lines) < lineCount {
-		lines = append(lines, state.paint(riskColor(item.Risk), truncate("action  "+inspectorAction(item), width)))
+		lines = append(lines, state.paint(riskColor(item.Risk), text.Truncate("action  "+inspectorAction(item), width)))
 	}
 	return lines
 }
 
-func inspectorSource(item Item) string {
+func inspectorSource(item scan.Item) string {
 	if item.Source != "" {
-		return cleanDisplay(item.Source)
+		return text.Clean(item.Source)
 	}
 	if item.Group != "" {
-		return cleanDisplay(item.Group)
+		return text.Clean(item.Group)
 	}
 	return "not reported"
 }
 
-func inspectorAction(item Item) string {
+func inspectorAction(item scan.Item) string {
 	if item.Unavailable != "" {
-		return "unavailable, " + cleanDisplay(item.Unavailable)
+		return "unavailable, " + text.Clean(item.Unavailable)
 	}
 	if item.Action == nil {
 		return "read-only"
 	}
-	return cleanDisplay(item.Action.Display())
+	return text.Clean(item.Action.Display())
 }
 
 func (state *tuiState) statusLine(width int) string {
 	if state.notice != "" {
 		notice := state.notice
 		state.notice = ""
-		return state.paint("amber", truncate(notice, width))
+		return state.paint(colorAmber, text.Truncate(notice, width))
 	}
 	if len(state.report.Issues) > 0 {
-		return state.paint("fog", truncate(fmt.Sprintf("scope=%s  notes=%d  allocated-blocks", state.scope(), len(state.report.Issues)), width))
+		return state.paint(colorFog, text.Truncate(fmt.Sprintf("scope=%s  notes=%d  allocated-blocks", state.scope(), len(state.report.Issues)), width))
 	}
-	return state.paint("fog", truncate("scope="+state.scope()+"  notes=0  allocated-blocks", width))
+	return state.paint(colorFog, text.Truncate("scope="+state.scope()+"  notes=0  allocated-blocks", width))
 }
 
 func (state *tuiState) scope() string {
@@ -1075,7 +1076,7 @@ func (state *tuiState) toggleSafe() {
 	allSelected := true
 	count := 0
 	for _, item := range state.report.Items {
-		if item.Risk == RiskSafe && item.Selectable() {
+		if item.Risk == scan.RiskSafe && item.Selectable() {
 			count++
 			allSelected = allSelected && state.selected[item.ID]
 		}
@@ -1085,7 +1086,7 @@ func (state *tuiState) toggleSafe() {
 		return
 	}
 	for _, item := range state.report.Items {
-		if item.Risk == RiskSafe && item.Selectable() {
+		if item.Risk == scan.RiskSafe && item.Selectable() {
 			state.selected[item.ID] = !allSelected
 		}
 	}
@@ -1101,33 +1102,33 @@ func (state *tuiState) showDetails(renderer *screenRenderer) {
 		width = 12
 	}
 	lines := []string{
-		state.bold("cyan", truncate(cleanDisplay(item.Name), width)),
+		state.bold(colorCyan, text.Truncate(text.Clean(item.Name), width)),
 		"",
-		truncate("category   "+displayCategory(item.Category), width),
+		text.Truncate("category   "+storage.DisplayCategory(item.Category), width),
 		"risk       " + state.riskBadge(item.Risk),
-		truncate("size       "+humanBytes(item.Bytes), width),
-		truncate("estimate   "+cleanDisplay(item.Estimate), width),
+		text.Truncate("size       "+storage.HumanBytes(item.Bytes), width),
+		text.Truncate("estimate   "+text.Clean(item.Estimate), width),
 	}
 	if item.Source != "" {
-		lines = append(lines, truncate("source     "+cleanDisplay(item.Source), width))
+		lines = append(lines, text.Truncate("source     "+text.Clean(item.Source), width))
 	}
 	if item.Modified != nil {
 		lines = append(lines, "modified   "+item.Modified.Format("2006-01-02 15:04"))
 	}
 	lines = append(lines, "")
-	for _, line := range wrapText(cleanDisplay(item.Detail), width-2) {
-		lines = append(lines, state.paint("fog", line))
+	for _, line := range text.Wrap(text.Clean(item.Detail), width-2) {
+		lines = append(lines, state.paint(colorFog, line))
 	}
 	if item.Action != nil {
 		lines = append(lines, "", state.bold(riskColor(item.Risk), "action"))
-		for _, line := range wrapText(cleanDisplay(item.Action.Display()), width-2) {
+		for _, line := range text.Wrap(text.Clean(item.Action.Display()), width-2) {
 			lines = append(lines, "  "+line)
 		}
 	} else {
-		lines = append(lines, "", state.paint("fog", "read-only"))
+		lines = append(lines, "", state.paint(colorFog, "read-only"))
 	}
 	if item.Unavailable != "" {
-		lines = append(lines, "", state.paint("coral", truncate("unavailable: "+cleanDisplay(item.Unavailable), width)))
+		lines = append(lines, "", state.paint(colorCoral, text.Truncate("unavailable: "+text.Clean(item.Unavailable), width)))
 	}
 	if len(lines) > height-1 {
 		lines = lines[:height-1]
@@ -1135,7 +1136,7 @@ func (state *tuiState) showDetails(renderer *screenRenderer) {
 	for len(lines) < height-1 {
 		lines = append(lines, "")
 	}
-	lines = append(lines, state.paint("fog", truncate("any key: return", width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate("any key: return", width)))
 	renderer.Render(lines)
 	_, _ = readKey()
 	renderer.Invalidate()
@@ -1170,9 +1171,9 @@ func (state *tuiState) showHelp(renderer *screenRenderer) {
 	}
 	lines := make([]string, 0, height)
 	for index, line := range plain {
-		line = truncate(line, width)
+		line = text.Truncate(line, width)
 		if index == 0 {
-			line = state.bold("cyan", line)
+			line = state.bold(colorCyan, line)
 		}
 		lines = append(lines, line)
 	}
@@ -1182,15 +1183,15 @@ func (state *tuiState) showHelp(renderer *screenRenderer) {
 	for len(lines) < height-1 {
 		lines = append(lines, "")
 	}
-	lines = append(lines, state.paint("fog", truncate("any key: return", width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate("any key: return", width)))
 	renderer.Render(lines)
 	_, _ = readKey()
 	renderer.Invalidate()
 }
 
-func confirmInteractive(items []Item, out io.Writer) (bool, error) {
-	fmt.Fprint(out, planText(items))
-	phrase := confirmationPhrase(items)
+func confirmInteractive(items []scan.Item, out io.Writer) (bool, error) {
+	fmt.Fprint(out, scan.PlanText(items))
+	phrase := scan.ConfirmationPhrase(items)
 	fmt.Fprintf(out, "\ntype %q to continue: ", phrase)
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -1203,22 +1204,22 @@ func confirmInteractive(items []Item, out io.Writer) (bool, error) {
 	return true, nil
 }
 
-func (state *tuiState) riskBadge(risk Risk) string {
+func (state *tuiState) riskBadge(risk scan.Risk) string {
 	return state.paint(riskColor(risk), string(risk))
 }
 
-func riskColor(risk Risk) string {
+func riskColor(risk scan.Risk) string {
 	switch risk {
-	case RiskSafe:
-		return "mint"
-	case RiskReview:
-		return "amber"
-	case RiskDestructive:
-		return "coral"
-	case RiskProtected:
-		return "fog"
+	case scan.RiskSafe:
+		return colorMint
+	case scan.RiskReview:
+		return colorAmber
+	case scan.RiskDestructive:
+		return colorCoral
+	case scan.RiskProtected:
+		return colorFog
 	default:
-		return "cyan"
+		return colorCyan
 	}
 }
 
@@ -1254,13 +1255,13 @@ func (state *tuiState) storageRail(width int, free, total, reclaim int64) string
 	freeCells := width - usedCells - reclaimCells
 	freePercent := float64(free) / float64(total) * 100
 	return state.paint(spaceColor(freePercent), strings.Repeat("█", usedCells)) +
-		state.paint("mint", strings.Repeat("▓", reclaimCells)) +
-		state.paint("fog", strings.Repeat("░", freeCells))
+		state.paint(colorMint, strings.Repeat("▓", reclaimCells)) +
+		state.paint(colorFog, strings.Repeat("░", freeCells))
 }
 
-func riskSummary(report Report) string {
+func riskSummary(report scan.Report) string {
 	parts := make([]string, 0, 5)
-	for _, risk := range []Risk{RiskSafe, RiskReview, RiskDestructive, RiskProtected, RiskInfo} {
+	for _, risk := range []scan.Risk{scan.RiskSafe, scan.RiskReview, scan.RiskDestructive, scan.RiskProtected, scan.RiskInfo} {
 		count := 0
 		var bytes int64
 		unknown := false
@@ -1278,7 +1279,7 @@ func riskSummary(report Report) string {
 		if count == 0 {
 			continue
 		}
-		part := fmt.Sprintf("%s=%d/%s", risk, count, humanBytes(bytes))
+		part := fmt.Sprintf("%s=%d/%s", risk, count, storage.HumanBytes(bytes))
 		if unknown {
 			part += "+"
 		}
@@ -1287,7 +1288,7 @@ func riskSummary(report Report) string {
 	return strings.Join(parts, "  ")
 }
 
-func filterLabel(risk Risk) string {
+func filterLabel(risk scan.Risk) string {
 	if risk == "" {
 		return "all"
 	}
@@ -1296,12 +1297,12 @@ func filterLabel(risk Risk) string {
 
 func spaceColor(freePercent float64) string {
 	if freePercent < 5 {
-		return "coral"
+		return colorCoral
 	}
 	if freePercent < 10 {
-		return "amber"
+		return colorAmber
 	}
-	return "cyan"
+	return colorCyan
 }
 
 func spaceLabel(freePercent float64) string {
@@ -1340,7 +1341,7 @@ func keyGuide(width int, view tuiView) string {
 	return "jk move  tab risk  space mark  c run  q quit"
 }
 
-func surfaceRoot(report Report) *SurfaceNode {
+func surfaceRoot(report scan.Report) *scan.SurfaceNode {
 	if report.Surface == nil {
 		return nil
 	}
@@ -1424,95 +1425,4 @@ func readKey() (string, error) {
 	default:
 		return string(buffer), nil
 	}
-}
-
-func cleanDisplay(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || r == 27 || r < 32 || r == 127 {
-			return ' '
-		}
-		return r
-	}, value)
-}
-
-func truncate(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if utf8.RuneCountInString(value) <= width {
-		return value
-	}
-	runes := []rune(value)
-	if width == 1 {
-		return "…"
-	}
-	return string(runes[:width-1]) + "…"
-}
-
-func padRight(value string, width int) string {
-	count := utf8.RuneCountInString(value)
-	if count >= width {
-		return truncate(value, width)
-	}
-	return value + strings.Repeat(" ", width-count)
-}
-
-func padLeft(value string, width int) string {
-	count := utf8.RuneCountInString(value)
-	if count >= width {
-		return truncate(value, width)
-	}
-	return strings.Repeat(" ", width-count) + value
-}
-
-func joinEdges(left, right string, width int) string {
-	left = cleanDisplay(left)
-	right = cleanDisplay(right)
-	if right == "" {
-		return truncate(left, width)
-	}
-	if utf8.RuneCountInString(left)+utf8.RuneCountInString(right)+2 > width {
-		leftWidth := width - utf8.RuneCountInString(right) - 2
-		if leftWidth < 1 {
-			return truncate(right, width)
-		}
-		left = truncate(left, leftWidth)
-	}
-	spaces := width - utf8.RuneCountInString(left) - utf8.RuneCountInString(right)
-	if spaces < 1 {
-		spaces = 1
-	}
-	return left + strings.Repeat(" ", spaces) + right
-}
-
-func formatDuration(duration time.Duration) string {
-	if duration < 0 {
-		duration = 0
-	}
-	if duration < time.Minute {
-		return fmt.Sprintf("%.1fs", duration.Seconds())
-	}
-	minutes := int(duration / time.Minute)
-	seconds := int(duration/time.Second) % 60
-	return fmt.Sprintf("%dm%02ds", minutes, seconds)
-}
-
-func wrapText(value string, width int) []string {
-	if width < 10 {
-		width = 10
-	}
-	words := strings.Fields(value)
-	if len(words) == 0 {
-		return nil
-	}
-	lines := []string{words[0]}
-	for _, word := range words[1:] {
-		last := len(lines) - 1
-		if utf8.RuneCountInString(lines[last])+1+utf8.RuneCountInString(word) <= width {
-			lines[last] += " " + word
-		} else {
-			lines = append(lines, truncate(word, width))
-		}
-	}
-	return lines
 }

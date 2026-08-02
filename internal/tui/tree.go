@@ -1,13 +1,17 @@
-package main
+package tui
 
 import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dappermint/mac-cleaner/internal/scan"
+	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/mac-cleaner/internal/text"
 )
 
 type surfaceRow struct {
-	node       *SurfaceNode
+	node       *scan.SurfaceNode
 	key        string
 	depth      int
 	parent     int64
@@ -15,13 +19,13 @@ type surfaceRow struct {
 	open       bool
 }
 
-func surfaceRows(root *SurfaceNode, expanded map[string]bool) []surfaceRow {
+func surfaceRows(root *scan.SurfaceNode, expanded map[string]bool) []surfaceRow {
 	if root == nil {
 		return nil
 	}
 	var rows []surfaceRow
-	var walk func(node *SurfaceNode, key string, depth int, parent int64, parentName string)
-	walk = func(node *SurfaceNode, key string, depth int, parent int64, parentName string) {
+	var walk func(node *scan.SurfaceNode, key string, depth int, parent int64, parentName string)
+	walk = func(node *scan.SurfaceNode, key string, depth int, parent int64, parentName string) {
 		open := expanded[key] && len(node.Children) > 0
 		rows = append(rows, surfaceRow{node: node, key: key, depth: depth, parent: parent, parentName: parentName, open: open})
 		if !open {
@@ -35,7 +39,7 @@ func surfaceRows(root *SurfaceNode, expanded map[string]bool) []surfaceRow {
 	return rows
 }
 
-func defaultExpansion(root *SurfaceNode, dataPath string) map[string]bool {
+func defaultExpansion(root *scan.SurfaceNode, dataPath string) map[string]bool {
 	expanded := make(map[string]bool)
 	if root == nil {
 		return expanded
@@ -43,7 +47,7 @@ func defaultExpansion(root *SurfaceNode, dataPath string) map[string]bool {
 	expanded[root.Name] = true
 	for _, container := range root.Children {
 		containerKey := root.Name + "/" + container.Name
-		if !container.hasChildAt(dataPath) {
+		if !hasChildAt(container, dataPath) {
 			continue
 		}
 		expanded[containerKey] = true
@@ -68,7 +72,7 @@ func defaultExpansion(root *SurfaceNode, dataPath string) map[string]bool {
 	return expanded
 }
 
-func (n *SurfaceNode) hasChildAt(path string) bool {
+func hasChildAt(n *scan.SurfaceNode, path string) bool {
 	if n == nil {
 		return false
 	}
@@ -80,10 +84,10 @@ func (n *SurfaceNode) hasChildAt(path string) bool {
 	return false
 }
 
-func largestChild(node *SurfaceNode) *SurfaceNode {
-	var best *SurfaceNode
+func largestChild(node *scan.SurfaceNode) *scan.SurfaceNode {
+	var best *scan.SurfaceNode
 	for _, child := range node.Children {
-		if child.Kind != NodeDirectory && child.Kind != NodeVolume {
+		if child.Kind != scan.NodeDirectory && child.Kind != scan.NodeVolume {
 			continue
 		}
 		if best == nil || child.Total() > best.Total() {
@@ -133,47 +137,47 @@ func (state *tuiState) collapseSurfaceRow() {
 	}
 }
 
-func surfaceLeafNotice(node *SurfaceNode) string {
+func surfaceLeafNotice(node *scan.SurfaceNode) string {
 	switch node.Kind {
-	case NodeUnreadable:
-		return "size unknown, grant Full Disk Access or rerun with sudo --root"
-	case NodeUnwalked:
+	case scan.NodeUnreadable:
+		return "size unknown, grant Full storage.Disk Access or rerun with sudo --root"
+	case scan.NodeUnwalked:
 		return "claimed by the volume, attributed to no readable file"
-	case NodeForeign:
+	case scan.NodeForeign:
 		return "separate volume, listed under its own container row"
 	default:
 		return "no deeper detail was retained for this branch"
 	}
 }
 
-func surfaceColor(kind NodeKind) string {
+func surfaceColor(kind scan.NodeKind) string {
 	switch kind {
-	case NodeContainer, NodeVolume, NodeSurface:
-		return "cyan"
-	case NodeFree:
-		return "mint"
-	case NodeUnwalked, NodeOverhead:
-		return "amber"
-	case NodeUnreadable:
-		return "coral"
-	case NodeRemainder, NodeForeign:
-		return "fog"
+	case scan.NodeContainer, scan.NodeVolume, scan.NodeSurface:
+		return colorCyan
+	case scan.NodeFree:
+		return colorMint
+	case scan.NodeUnwalked, scan.NodeOverhead:
+		return colorAmber
+	case scan.NodeUnreadable:
+		return colorCoral
+	case scan.NodeRemainder, scan.NodeForeign:
+		return colorFog
 	default:
-		return "ink"
+		return colorInk
 	}
 }
 
-func surfaceSize(node *SurfaceNode) string {
-	if node.Kind == NodeForeign {
+func surfaceSize(node *scan.SurfaceNode) string {
+	if node.Kind == scan.NodeForeign {
 		return "elsewhere"
 	}
 	if node.Bytes < 0 {
 		return "unknown"
 	}
-	return humanBytes(node.Bytes)
+	return storage.HumanBytes(node.Bytes)
 }
 
-func surfaceShare(node *SurfaceNode, parent int64) string {
+func surfaceShare(node *scan.SurfaceNode, parent int64) string {
 	if parent <= 0 || node.Bytes < 0 {
 		return ""
 	}
@@ -182,13 +186,13 @@ func surfaceShare(node *SurfaceNode, parent int64) string {
 
 func (state *tuiState) narrowLine(focused bool, color, label string, width int) string {
 	if width <= 2 {
-		return truncate(cleanDisplay(label), width)
+		return text.Truncate(text.Clean(label), width)
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint("cyan", "›")
+		cursor = state.paint(colorCyan, "›")
 	}
-	return cursor + " " + state.paint(color, truncate(cleanDisplay(label), width-2))
+	return cursor + " " + state.paint(color, text.Truncate(text.Clean(label), width-2))
 }
 
 func (state *tuiState) surfaceLine(row surfaceRow, focused bool, width int) string {
@@ -216,7 +220,7 @@ func (state *tuiState) surfaceLine(row surfaceRow, focused bool, width int) stri
 
 	cursor := " "
 	if focused {
-		cursor = state.paint("cyan", "›")
+		cursor = state.paint(colorCyan, "›")
 	}
 	glyph := "·"
 	if len(row.node.Children) > 0 {
@@ -229,12 +233,12 @@ func (state *tuiState) surfaceLine(row surfaceRow, focused bool, width int) stri
 	if depth > 8 {
 		depth = 8
 	}
-	label := strings.Repeat("  ", depth) + glyph + " " + cleanDisplay(row.node.Name)
+	label := strings.Repeat("  ", depth) + glyph + " " + text.Clean(row.node.Name)
 	color := surfaceColor(row.node.Kind)
-	line := cursor + " " + state.paint(color, padRight(truncate(label, nameWidth), nameWidth)) +
-		" " + state.paint(color, padLeft(surfaceSize(row.node), sizeWidth))
+	line := cursor + " " + state.paint(color, text.PadRight(text.Truncate(label, nameWidth), nameWidth)) +
+		" " + state.paint(color, text.PadLeft(surfaceSize(row.node), sizeWidth))
 	if shareWidth > 0 {
-		line += " " + state.paint("fog", padLeft(surfaceShare(row.node, row.parent), shareWidth))
+		line += " " + state.paint(colorFog, text.PadLeft(surfaceShare(row.node, row.parent), shareWidth))
 	}
 	if barWidth > 0 {
 		line += " " + state.shareBar(row.node, row.parent, barWidth)
@@ -253,7 +257,7 @@ func surfaceNameWidth(width, sizeWidth, shareWidth, barWidth int) int {
 	return remaining
 }
 
-func (state *tuiState) shareBar(node *SurfaceNode, parent int64, width int) string {
+func (state *tuiState) shareBar(node *scan.SurfaceNode, parent int64, width int) string {
 	if parent <= 0 || node.Bytes < 0 || width <= 0 {
 		return strings.Repeat(" ", max(width, 0))
 	}
@@ -265,14 +269,14 @@ func (state *tuiState) shareBar(node *SurfaceNode, parent int64, width int) stri
 		filled = 1
 	}
 	return state.paint(surfaceColor(node.Kind), strings.Repeat("▇", filled)) +
-		state.paint("fog", strings.Repeat("·", width-filled))
+		state.paint(colorFog, strings.Repeat("·", width-filled))
 }
 
 func (state *tuiState) surfaceInspector(width, lineCount int) []string {
 	rows := state.surfaceRows()
 	index := state.cursor()
 	if index < 0 || index >= len(rows) {
-		return padLines([]string{state.paint("fog", truncate("no surface was measured", width))}, lineCount)
+		return padLines([]string{state.paint(colorFog, text.Truncate("no surface was measured", width))}, lineCount)
 	}
 	row := rows[index]
 	meta := surfaceSize(row.node)
@@ -281,12 +285,12 @@ func (state *tuiState) surfaceInspector(width, lineCount int) []string {
 		if owner == "" {
 			owner = "total"
 		}
-		meta += " / " + share + " of " + cleanDisplay(owner)
+		meta += " / " + share + " of " + text.Clean(owner)
 	}
 	if row.node.Category != "" {
-		meta += " / " + displayCategory(row.node.Category)
+		meta += " / " + storage.DisplayCategory(row.node.Category)
 	}
-	lines := []string{state.bold("ink", truncate(joinEdges(cleanDisplay(row.node.Name), meta, width), width))}
+	lines := []string{state.bold(colorInk, text.Truncate(text.JoinEdges(text.Clean(row.node.Name), meta, width), width))}
 	if lineCount <= 1 {
 		return lines
 	}
@@ -294,7 +298,7 @@ func (state *tuiState) surfaceInspector(width, lineCount int) []string {
 	if detail == "" {
 		detail = surfaceNodeDetail(row.node)
 	}
-	lines = append(lines, state.paint("fog", truncate(cleanDisplay(detail), width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate(text.Clean(detail), width)))
 	if lineCount <= 2 {
 		return lines
 	}
@@ -302,25 +306,25 @@ func (state *tuiState) surfaceInspector(width, lineCount int) []string {
 	if source == "" {
 		source = "derived from apfs volume totals"
 	}
-	lines = append(lines, state.paint("fog", truncate("path    "+cleanDisplay(source), width)))
+	lines = append(lines, state.paint(colorFog, text.Truncate("path    "+text.Clean(source), width)))
 	if lineCount > 3 {
-		lines = append(lines, state.paint("fog", truncate(surfaceCounts(row.node), width)))
+		lines = append(lines, state.paint(colorFog, text.Truncate(surfaceCounts(row.node), width)))
 	}
 	return padLines(lines, lineCount)
 }
 
-func surfaceNodeDetail(node *SurfaceNode) string {
+func surfaceNodeDetail(node *scan.SurfaceNode) string {
 	switch node.Kind {
-	case NodeRemainder:
+	case scan.NodeRemainder:
 		return "everything at this level too small to keep its own row, plus loose files"
-	case NodeDirectory:
+	case scan.NodeDirectory:
 		return "measured by summing allocated blocks under this directory"
 	default:
 		return "reported by the filesystem rather than measured file by file"
 	}
 }
 
-func surfaceCounts(node *SurfaceNode) string {
+func surfaceCounts(node *scan.SurfaceNode) string {
 	parts := make([]string, 0, 3)
 	if node.Files > 0 {
 		parts = append(parts, fmt.Sprintf("files=%d", node.Files))
@@ -333,7 +337,7 @@ func surfaceCounts(node *SurfaceNode) string {
 }
 
 type healthRow struct {
-	level  HealthLevel
+	level  scan.HealthLevel
 	name   string
 	value  string
 	detail string
@@ -343,9 +347,9 @@ type healthRow struct {
 func (state *tuiState) healthRows() []healthRow {
 	var rows []healthRow
 	if state.report.Health != nil {
-		signals := append([]HealthSignal(nil), state.report.Health.Signals...)
+		signals := append([]scan.HealthSignal(nil), state.report.Health.Signals...)
 		sort.SliceStable(signals, func(a, b int) bool {
-			return healthOrder(signals[a].Level) < healthOrder(signals[b].Level)
+			return scan.HealthOrder(signals[a].Level) < scan.HealthOrder(signals[b].Level)
 		})
 		for _, signal := range signals {
 			rows = append(rows, healthRow{
@@ -359,9 +363,9 @@ func (state *tuiState) healthRows() []healthRow {
 	}
 	if state.report.Surface != nil {
 		for _, fault := range state.report.Surface.Faults {
-			level := HealthWatch
+			level := scan.HealthWatch
 			if fault.Hardware {
-				level = HealthAlarm
+				level = scan.HealthAlarm
 			}
 			rows = append(rows, healthRow{
 				level:  level,
@@ -374,7 +378,7 @@ func (state *tuiState) healthRows() []healthRow {
 	}
 	for _, issue := range state.report.Issues {
 		rows = append(rows, healthRow{
-			level:  HealthUnknown,
+			level:  scan.HealthUnknown,
 			name:   "scan note",
 			value:  issue,
 			detail: "the scan could not complete this check, so its bytes are not in any total",
@@ -384,16 +388,16 @@ func (state *tuiState) healthRows() []healthRow {
 	return rows
 }
 
-func healthColor(level HealthLevel) string {
+func healthColor(level scan.HealthLevel) string {
 	switch level {
-	case HealthAlarm:
-		return "coral"
-	case HealthWatch:
-		return "amber"
-	case HealthUnknown:
-		return "fog"
+	case scan.HealthAlarm:
+		return colorCoral
+	case scan.HealthWatch:
+		return colorAmber
+	case scan.HealthUnknown:
+		return colorFog
 	default:
-		return "mint"
+		return colorMint
 	}
 }
 
@@ -409,37 +413,37 @@ func (state *tuiState) healthLine(row healthRow, focused bool, width int) string
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint("cyan", "›")
+		cursor = state.paint(colorCyan, "›")
 	}
 	return cursor + " " +
-		state.paint(healthColor(row.level), padRight(string(row.level), levelWidth)) + " " +
-		state.paint("ink", padRight(truncate(cleanDisplay(row.name), nameWidth), nameWidth)) + " " +
-		state.paint("fog", truncate(cleanDisplay(row.value), valueWidth))
+		state.paint(healthColor(row.level), text.PadRight(string(row.level), levelWidth)) + " " +
+		state.paint(colorInk, text.PadRight(text.Truncate(text.Clean(row.name), nameWidth), nameWidth)) + " " +
+		state.paint(colorFog, text.Truncate(text.Clean(row.value), valueWidth))
 }
 
 func (state *tuiState) healthInspector(width, lineCount int) []string {
 	rows := state.healthRows()
 	index := state.cursor()
 	if index < 0 || index >= len(rows) {
-		return padLines([]string{state.paint("fog", truncate("no health signals were gathered", width))}, lineCount)
+		return padLines([]string{state.paint(colorFog, text.Truncate("no health signals were gathered", width))}, lineCount)
 	}
 	row := rows[index]
-	lines := []string{state.bold("ink", truncate(joinEdges(cleanDisplay(row.name), string(row.level), width), width))}
+	lines := []string{state.bold(colorInk, text.Truncate(text.JoinEdges(text.Clean(row.name), string(row.level), width), width))}
 	if lineCount <= 1 {
 		return lines
 	}
-	lines = append(lines, state.paint(healthColor(row.level), truncate(cleanDisplay(row.value), width)))
+	lines = append(lines, state.paint(healthColor(row.level), text.Truncate(text.Clean(row.value), width)))
 	if lineCount <= 2 {
 		return lines
 	}
-	for _, wrapped := range wrapText(cleanDisplay(row.detail), width) {
+	for _, wrapped := range text.Wrap(text.Clean(row.detail), width) {
 		if len(lines) >= lineCount-1 {
 			break
 		}
-		lines = append(lines, state.paint("fog", truncate(wrapped, width)))
+		lines = append(lines, state.paint(colorFog, text.Truncate(wrapped, width)))
 	}
 	if len(lines) < lineCount {
-		lines = append(lines, state.paint("fog", truncate("source  "+cleanDisplay(row.source), width)))
+		lines = append(lines, state.paint(colorFog, text.Truncate("source  "+text.Clean(row.source), width)))
 	}
 	return padLines(lines, lineCount)
 }

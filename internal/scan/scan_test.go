@@ -1,4 +1,4 @@
-package main
+package scan
 
 import (
 	"bytes"
@@ -8,7 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
 
 func TestPathUsageCountsAllocatedBlocks(t *testing.T) {
@@ -26,7 +27,7 @@ func TestPathUsageCountsAllocatedBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	measured, err := pathUsage(context.Background(), root)
+	measured, err := storage.PathUsage(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestMoveToTrashIsRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	destination, err := moveToTrash(home, source)
+	destination, err := MoveToTrash(home, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestMoveToTrashRejectsEscapingParentSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := moveToTrash(home, filepath.Join(home, "linked", "data"))
+	_, err := MoveToTrash(home, filepath.Join(home, "linked", "data"))
 	if err == nil || !strings.Contains(err.Error(), "symlink outside home") {
 		t.Fatalf("expected symlink escape refusal, got %v", err)
 	}
@@ -87,7 +88,7 @@ func TestMoveToTrashRejectsEscapingParentSymlink(t *testing.T) {
 }
 
 func TestEmptyTrashRejectsUnsafeHome(t *testing.T) {
-	if err := emptyTrash("/"); err == nil {
+	if err := EmptyTrash("/"); err == nil {
 		t.Fatal("expected root home path to be rejected")
 	}
 }
@@ -111,8 +112,8 @@ func TestDryRunDoesNotMoveFiles(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	results := executeItems(context.Background(), home, []Item{item}, true, &output)
-	if err := actionErrors(results); err != nil {
+	results := ExecuteItems(context.Background(), home, []Item{item}, true, &output)
+	if err := ActionErrors(results); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(source); err != nil {
@@ -174,13 +175,13 @@ func TestScannerClassifiesDataAndArtifacts(t *testing.T) {
 
 func TestSizeParsing(t *testing.T) {
 	output := "Would remove one (807.5MB)\nThis operation would free approximately 2.3GB\n"
-	if got, want := parseLargestSize(output), int64(2300000000); got != want {
+	if got, want := storage.ParseLargestSize(output), int64(2300000000); got != want {
 		t.Fatalf("largest size = %d, want %d", got, want)
 	}
-	if got, want := sumSizes("2GB\n500MB\n"), int64(2500000000); got != want {
+	if got, want := storage.SumSizes("2GB\n500MB\n"), int64(2500000000); got != want {
 		t.Fatalf("summed size = %d, want %d", got, want)
 	}
-	if got := parseLargestSize("/nix/store/abc93171b-package.drv\n"); got != 0 {
+	if got := storage.ParseLargestSize("/nix/store/abc93171b-package.drv\n"); got != 0 {
 		t.Fatalf("nix store hash parsed as a byte size: %d", got)
 	}
 	if got, want := parseNixGCCount("/nix/store/path\n5154 store paths would be deleted\n"), 5154; got != want {
@@ -191,37 +192,13 @@ func TestSizeParsing(t *testing.T) {
 func TestSelectionTotalsOnlyCountTrashAfterEmpty(t *testing.T) {
 	move := Item{Bytes: 100, Action: &Action{Kind: ActionTrash}}
 	empty := Item{Bytes: 25, Action: &Action{Kind: ActionEmptyTrash}}
-	direct, toTrash, empties := selectionTotals([]Item{move})
+	direct, toTrash, empties := SelectionTotals([]Item{move})
 	if direct != 0 || toTrash != 100 || empties {
 		t.Fatalf("move-only totals = %d, %d, %v", direct, toTrash, empties)
 	}
-	direct, toTrash, empties = selectionTotals([]Item{move, empty})
+	direct, toTrash, empties = SelectionTotals([]Item{move, empty})
 	if direct != 125 || toTrash != 0 || !empties {
 		t.Fatalf("empty-trash totals = %d, %d, %v", direct, toTrash, empties)
-	}
-}
-
-func TestDisplaySanitizesTerminalControls(t *testing.T) {
-	if got := cleanDisplay("safe\x1b[2J\nname"); strings.ContainsRune(got, 27) || strings.ContainsRune(got, '\n') {
-		t.Fatalf("terminal controls remained in %q", got)
-	}
-}
-
-func TestRendererAddressesRowsWithoutTerminalNewlines(t *testing.T) {
-	var output bytes.Buffer
-	renderer := screenRenderer{out: &output, height: 3, width: 20, active: true}
-	renderer.Render([]string{"one", "two"})
-	if strings.ContainsRune(output.String(), '\n') {
-		t.Fatalf("renderer emitted a terminal newline: %q", output.String())
-	}
-	if !strings.Contains(output.String(), "\x1b[1;1Hone") || !strings.Contains(output.String(), "\x1b[2;1Htwo") {
-		t.Fatalf("renderer did not address rows directly: %q", output.String())
-	}
-
-	output.Reset()
-	renderer.Render([]string{"one", "changed"})
-	if strings.Contains(output.String(), "\x1b[1;1H") || !strings.Contains(output.String(), "\x1b[2;1Hchanged") {
-		t.Fatalf("renderer did not diff the frame: %q", output.String())
 	}
 }
 
@@ -247,7 +224,8 @@ func TestScannerReportsEveryStageLifecycle(t *testing.T) {
 	}
 	scanner.Scan(context.Background())
 
-	expectedIDs := []string{"volume"}
+	expectedIDs := make([]string, 0, 1+len(scanner.collectors()))
+	expectedIDs = append(expectedIDs, "volume")
 	for _, collector := range scanner.collectors() {
 		expectedIDs = append(expectedIDs, collector.id)
 	}
@@ -263,69 +241,12 @@ func TestScannerReportsEveryStageLifecycle(t *testing.T) {
 	}
 }
 
-func TestTUIFiltersKeepCursorOnVisibleItems(t *testing.T) {
-	state := tuiState{
-		report: Report{Items: []Item{
-			{ID: "safe", Risk: RiskSafe},
-			{ID: "review", Risk: RiskReview},
-			{ID: "protected", Risk: RiskProtected},
-		}},
-		selected: make(map[string]bool),
-	}
-	state.cycleFilter()
-	indices := state.filteredIndices()
-	if len(indices) != 1 || indices[0] != 0 {
-		t.Fatalf("safe filter indices = %#v", indices)
-	}
-	item, ok := state.focusedItem()
-	if !ok || item.ID != "safe" {
-		t.Fatalf("focused item = %#v, %v", item, ok)
-	}
-	state.cycleFilter()
-	item, ok = state.focusedItem()
-	if !ok || item.ID != "review" {
-		t.Fatalf("focused review item = %#v, %v", item, ok)
-	}
-}
-
-func TestStorageRailShowsUsedSelectedAndFreeSegments(t *testing.T) {
-	state := tuiState{}
-	rail := state.storageRail(10, 20, 100, 10)
-	if got := len([]rune(rail)); got != 10 {
-		t.Fatalf("rail width = %d, want 10", got)
-	}
-	if got, want := rail, "███████▓░░"; got != want {
-		t.Fatalf("rail = %q, want %q", got, want)
-	}
-}
-
-func TestStageAndItemRowsStayInsideTerminalWidth(t *testing.T) {
-	launch := launchState{}
-	stage := launch.stageLine(ScanProgress{
-		Name:    "very long scan stage name",
-		Detail:  "a deliberately long description that must not wrap into another terminal row",
-		State:   ScanRunning,
-		Started: time.Now(),
-	}, time.Now(), 80)
-	if got := len([]rune(stage)); got != 80 {
-		t.Fatalf("stage width = %d, want 80", got)
-	}
-
-	state := tuiState{}
-	item := Item{Name: strings.Repeat("wide item ", 20), Category: CategoryOtherUsers, Risk: RiskProtected, Bytes: 1024}
-	for _, width := range []int{40, 80} {
-		if got := len([]rune(state.itemLine(item, true, width))); got > width {
-			t.Fatalf("item width = %d, terminal width = %d", got, width)
-		}
-	}
-}
-
 func TestReportSortsByCategoryThenSize(t *testing.T) {
 	report := Report{Items: []Item{
-		{ID: "system-small", Name: "small", Category: CategorySystemData, Bytes: 10},
-		{ID: "developer", Name: "dev", Category: CategoryDeveloper, Bytes: 50},
-		{ID: "application", Name: "app", Category: CategoryApplications, Bytes: 1},
-		{ID: "system-large", Name: "large", Category: CategorySystemData, Bytes: 100},
+		{ID: "system-small", Name: "small", Category: storage.CategorySystemData, Bytes: 10},
+		{ID: "developer", Name: "dev", Category: storage.CategoryDeveloper, Bytes: 50},
+		{ID: "application", Name: "app", Category: storage.CategoryApplications, Bytes: 1},
+		{ID: "system-large", Name: "large", Category: storage.CategorySystemData, Bytes: 100},
 	}}
 	report.Sort()
 	got := []string{report.Items[0].ID, report.Items[1].ID, report.Items[2].ID, report.Items[3].ID}
@@ -336,17 +257,17 @@ func TestReportSortsByCategoryThenSize(t *testing.T) {
 }
 
 func TestUserDataCategoriesMatchMacOSBuckets(t *testing.T) {
-	tests := map[string]StorageCategory{
-		"~/Library/Application Support/CloudDocs":  CategoryICloudDrive,
-		"~/Library/Application Support/MobileSync": CategoryIOSFiles,
-		"~/Library/Messages":                       CategoryMessages,
-		"~/Library/Mail":                           CategoryMail,
-		"~/Pictures/Photos Library.photoslibrary":  CategoryPhotos,
-		"~/Library/Application Support/Steam":      CategorySystemData,
+	tests := map[string]storage.Category{
+		"~/Library/Application Support/CloudDocs":  storage.CategoryICloudDrive,
+		"~/Library/Application Support/MobileSync": storage.CategoryIOSFiles,
+		"~/Library/Messages":                       storage.CategoryMessages,
+		"~/Library/Mail":                           storage.CategoryMail,
+		"~/Pictures/Photos Library.photoslibrary":  storage.CategoryPhotos,
+		"~/Library/Application Support/Steam":      storage.CategorySystemData,
 	}
 	for path, want := range tests {
-		if got := categoryForUserData(path); got != want {
-			t.Errorf("categoryForUserData(%q) = %q, want %q", path, got, want)
+		if got := storage.CategoryForUserData(path); got != want {
+			t.Errorf("storage.CategoryForUserData(%q) = %q, want %q", path, got, want)
 		}
 	}
 }
@@ -359,8 +280,8 @@ func TestRootInventoryClassifiesAndProtectsSystemTrees(t *testing.T) {
 		system:   filepath.Join(root, "System"),
 		users:    filepath.Join(root, "Users"),
 		fixed: []inventoryTarget{
-			{path: filepath.Join(root, "nix", "store"), category: CategorySystemData},
-			{path: filepath.Join(root, "opt", "homebrew"), category: CategoryDeveloper},
+			{path: filepath.Join(root, "nix", "store"), category: storage.CategorySystemData},
+			{path: filepath.Join(root, "opt", "homebrew"), category: storage.CategoryDeveloper},
 		},
 	}
 	home := filepath.Join(paths.users, "current")
@@ -395,12 +316,12 @@ func TestRootInventoryClassifiesAndProtectsSystemTrees(t *testing.T) {
 	scanner.SystemMinimum = 1
 	scanner.rootPaths = &paths
 	system := scanner.collectSystemData(context.Background())
-	wantCategories := map[string]StorageCategory{
-		filepath.Join(paths.library, "Caches"):    CategorySystemData,
-		filepath.Join(paths.library, "Developer"): CategoryDeveloper,
-		filepath.Join(paths.variable, "vm"):       CategorySystemData,
-		filepath.Join(root, "nix", "store"):       CategorySystemData,
-		filepath.Join(root, "opt", "homebrew"):    CategoryDeveloper,
+	wantCategories := map[string]storage.Category{
+		filepath.Join(paths.library, "Caches"):    storage.CategorySystemData,
+		filepath.Join(paths.library, "Developer"): storage.CategoryDeveloper,
+		filepath.Join(paths.variable, "vm"):       storage.CategorySystemData,
+		filepath.Join(root, "nix", "store"):       storage.CategorySystemData,
+		filepath.Join(root, "opt", "homebrew"):    storage.CategoryDeveloper,
 	}
 	for _, item := range system.items {
 		want, ok := wantCategories[item.Source]
@@ -420,7 +341,7 @@ func TestRootInventoryClassifiesAndProtectsSystemTrees(t *testing.T) {
 	}
 
 	macOS := scanner.collectMacOS(context.Background())
-	if len(macOS.items) != 1 || macOS.items[0].Category != CategoryMacOS || macOS.items[0].Selectable() {
+	if len(macOS.items) != 1 || macOS.items[0].Category != storage.CategoryMacOS || macOS.items[0].Selectable() {
 		t.Fatalf("macOS inventory = %#v", macOS.items)
 	}
 	if macOS.items[0].Bytes >= 4*1024*1024 {
@@ -431,28 +352,15 @@ func TestRootInventoryClassifiesAndProtectsSystemTrees(t *testing.T) {
 		t.Fatalf("other users = %#v", otherUsers.items)
 	}
 	for _, item := range otherUsers.items {
-		if item.Source == home || item.Category != CategoryOtherUsers || item.Selectable() {
+		if item.Source == home || item.Category != storage.CategoryOtherUsers || item.Selectable() {
 			t.Fatalf("invalid other-user item: %#v", item)
 		}
 	}
 }
 
-func TestRootModeIsExplicit(t *testing.T) {
-	rootful, args := extractRootFlag([]string{"scan", "--json", "--root"})
-	if !rootful || strings.Join(args, " ") != "scan --json" {
-		t.Fatalf("root args = %v, %#v", rootful, args)
-	}
-	if err := validateRootMode(true, 501); err == nil {
-		t.Fatal("root mode accepted a non-root uid")
-	}
-	if err := validateRootMode(true, 0); err != nil {
-		t.Fatalf("root mode rejected uid 0: %v", err)
-	}
-}
-
 func TestCommandEnvironmentDropsRootHome(t *testing.T) {
-	identity := &commandIdentity{Username: "operator", Home: "/Users/operator"}
-	environment := commandEnvironment([]string{
+	identity := &storage.CommandIdentity{Username: "operator", Home: "/Users/operator"}
+	environment := storage.CommandEnvironment([]string{
 		"PATH=/bin",
 		"HOME=/var/root",
 		"USER=root",
