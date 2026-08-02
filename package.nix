@@ -8,6 +8,8 @@ buildGoModule {
   pname = "mac-cleaner";
   inherit version;
 
+  __structuredAttrs = true;
+
   src = ./.;
   vendorHash = null;
 
