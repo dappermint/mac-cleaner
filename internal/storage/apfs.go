@@ -135,6 +135,14 @@ func DeviceID(stat *syscall.Stat_t) uint64 {
 	return uint64(uint32(stat.Dev))
 }
 
+func FileOwner(info os.FileInfo) (uint32, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return stat.Uid, true
+}
+
 func fixedString(value []int8) string {
 	raw := make([]byte, 0, len(value))
 	for _, character := range value {
