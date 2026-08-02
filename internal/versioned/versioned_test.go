@@ -41,6 +41,29 @@ func TestBrokenActiveLinkFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsSymlinkedRootAncestor(t *testing.T) {
+	base := t.TempDir()
+	realParent := filepath.Join(base, "real")
+	realRoot := filepath.Join(realParent, "versions")
+	if err := os.MkdirAll(filepath.Join(realRoot, "1.0.0"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "alias", "versions")
+	if err := os.Symlink("1.0.0", filepath.Join(root, "Current")); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Resolve(Spec{Root: root, ActiveLink: "Current"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Active != "1.0.0" {
+		t.Fatalf("active = %q", plan.Active)
+	}
+}
+
 func TestStillStaleReplansAfterActiveChanges(t *testing.T) {
 	root := versions(t, "1.0.0", "2.0.0")
 	link := filepath.Join(root, "Current")

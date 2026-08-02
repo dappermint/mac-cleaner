@@ -193,7 +193,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 		scope = state.localizer.T("tui.scope.root")
 	}
 	lines := []string{
-		state.bold(colorCyan, text.Truncate(text.JoinEdges(title, "scan / "+scope, width), width)),
+		state.bold(colorCyan, headerText(title, "scan / "+scope, width)),
 		state.paint(colorInk, text.Truncate(text.JoinEdges(state.label, state.localizer.T("tui.launch.elapsed", text.Duration(now.Sub(state.started))), width), width)),
 	}
 
@@ -773,7 +773,7 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	if state.rootful {
 		scope = state.t("tui.scope.root")
 	}
-	lines := []string{state.bold(colorCyan, text.Truncate(text.JoinEdges(title, state.viewName()+" / "+scope, width), width))}
+	lines := []string{state.bold(colorCyan, headerText(title, state.viewName()+" / "+scope, width))}
 
 	chosen := scan.SelectedItems(state.report, state.selected)
 	direct, toTrash, _ := scan.SelectionTotals(chosen)
@@ -807,6 +807,13 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 		lines = append(lines, state.paint(colorFog, text.Truncate("live sample, refreshed every 2s", width)))
 	}
 	return lines
+}
+
+func headerText(left, right string, width int) string {
+	if width > 1 {
+		width--
+	}
+	return text.JoinEdges(left, right, width)
 }
 
 func (state *tuiState) capacityLine(width int, reclaim int64) string {

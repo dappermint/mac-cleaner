@@ -54,6 +54,7 @@ com.apple.ActivityMonitor
 com.apple.AddressBook
 com.apple.AddressBook.UrlForwarder
 com.apple.AirPlayUIAgent
+com.apple.AirPortBaseStationAgent
 com.apple.AppStore
 com.apple.AppleScriptUtility
 com.apple.Automator
@@ -180,11 +181,13 @@ com.apple.WatchFaceAlert
 com.apple.WindowManager
 com.apple.WorkoutAlert-Mac
 com.apple.accessibility.AccessibilityReader
+com.apple.airport.airportutility
 com.apple.appleseed.FeedbackAssistant
 com.apple.apps.launcher
 com.apple.archiveutility
 com.apple.audio.AudioMIDISetup
 com.apple.backup.launcher
+com.apple.bootcampassistant
 com.apple.calculator
 com.apple.campo
 com.apple.chrono.WidgetRenderer-Activities
@@ -243,6 +246,7 @@ com.apple.weather
 com.apple.widgetkit.simulator
 com.apple.wifi.WiFiAgent
 com.apple.wifi.diagnostics
+com.apple.windowmanager.ShowDesktopEducation
 com.apple.windowmanager.StageManagerOnboarding
 
 [apple-uninstallable]

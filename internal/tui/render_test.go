@@ -84,6 +84,16 @@ func TestEveryViewRendersAFullFrame(t *testing.T) {
 	}
 }
 
+func TestHeaderKeepsScopeOutOfTheTerminalWrapColumn(t *testing.T) {
+	header := headerText("ratatouille / meatwizard", "surface / user", 80)
+	if visibleWidth(header) != 79 {
+		t.Fatalf("header width = %d", visibleWidth(header))
+	}
+	if !strings.HasSuffix(header, "surface / user") {
+		t.Fatalf("header = %q", header)
+	}
+}
+
 func TestSurfaceViewShowsTheUnaccountedRow(t *testing.T) {
 	report := sampleReport()
 	state := tuiState{

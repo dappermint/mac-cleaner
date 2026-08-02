@@ -37,6 +37,10 @@ func Resolve(spec Spec) (Plan, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return Plan{}, errors.New("versions root is not a physical directory")
 	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return Plan{}, err
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return Plan{}, err
@@ -84,7 +88,7 @@ func Resolve(spec Spec) (Plan, error) {
 			return Plan{}, errors.New("active version link is unavailable")
 		}
 		target, linkErr := filepath.EvalSymlinks(link)
-		if linkErr != nil || filepath.Dir(target) != root {
+		if linkErr != nil || filepath.Dir(target) != resolvedRoot {
 			return Plan{}, errors.New("active version link leaves the versions root")
 		}
 		active = filepath.Base(target)
