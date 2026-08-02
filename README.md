@@ -54,6 +54,10 @@ The surface walk is the slow part, about a minute for two million files. `scan` 
 ## install
 
 ```sh
+brew install dappermint/tap/mac-cleaner
+```
+
+```sh
 nix profile install github:dappermint/mac-cleaner
 ```
 
@@ -63,6 +67,12 @@ Or as a flake input:
 inputs.mac-cleaner.url = "github:dappermint/mac-cleaner";
 environment.systemPackages = [ inputs.mac-cleaner.packages.${system}.default ];
 ```
+
+Prebuilt universal darwin binaries are attached to every
+[release](https://github.com/dappermint/mac-cleaner/releases), with checksums.
+
+It is not in homebrew-core. That needs 225 stars for a self-submission and a
+repository older than 30 days, so the tap is the supported route for now.
 
 ## develop
 

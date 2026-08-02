@@ -23,6 +23,9 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
-          args: release --clean
+          args: >-
+            release --clean
+            ${{ secrets.HOMEBREW_TAP_TOKEN == '' && '--skip=homebrew_casks' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
