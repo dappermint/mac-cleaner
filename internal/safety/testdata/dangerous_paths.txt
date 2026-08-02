@@ -1,0 +1,116 @@
+# Every line here must be refused by ValidateForDeletion. Lines starting with #
+# are comments; a line that is only whitespace is skipped. Ported from the mole
+# corpus and extended with the cases this validator adds.
+
+# not a path at all
+.
+..
+foo
+./foo
+../foo
+foo/..
+~/Library/Caches
+Users/someone/Library
+
+# traversal
+/foo/../bar
+/..
+/../
+/Users/someone/../../etc
+/Users/someone/Library/../../../System
+/private/tmp/../../etc/passwd
+
+# the root itself
+/
+//
+/.
+
+# denied roots
+/bin
+/bin/sh
+/sbin/launchd
+/usr
+/usr/bin
+/usr/bin/env
+/usr/lib/dyld
+/System
+/System/Library
+/System/Library/CoreServices
+/System/Applications/Mail.app
+/etc
+/etc/passwd
+/etc/pam.d/sudo
+/private/etc
+/private/etc/passwd
+/var/db
+/var/db/dslocal
+/private/var/db
+/private/var/db/dslocal/nodes
+/Library/Extensions
+/Library/Extensions/Something.kext
+/dev
+/dev/disk0
+/cores
+/.vol/1234
+/Network/Servers
+
+# bare roots, whose children may be removable but which are not
+/Applications
+/Library
+/Library/Application Support
+/Library/Caches
+/Library/Logs
+/Library/Preferences
+/Library/LaunchAgents
+/Library/LaunchDaemons
+/Library/Keychains
+/Users
+/Users/someone
+/Users/someone/
+/Volumes
+/Volumes/External
+/opt
+/private
+/private/var
+/private/var/root
+/tmp
+/usr/local
+/var
+/var/root
+
+# bare roots inside a home
+/Users/someone/Library
+/Users/someone/Library/Caches
+/Users/someone/Library/Application Support
+/Users/someone/Library/Containers
+/Users/someone/Library/Group Containers
+/Users/someone/Library/Preferences
+/Users/someone/Library/LaunchAgents
+/Users/someone/Documents
+/Users/someone/Desktop
+/Users/someone/Downloads
+/Users/someone/Movies
+/Users/someone/Music
+/Users/someone/Pictures
+/Users/someone/.Trash
+/Users/someone/.ssh
+/Users/someone/.gnupg
+/Users/someone/.config
+
+# the data volume mount point is the same namespace
+/System/Volumes/Data
+/System/Volumes/Data/Users
+/System/Volumes/Data/Users/someone
+/System/Volumes/Data/Users/someone/Library
+
+# protected paths from the protection table
+/Library/Updates
+/Library/Updates/031-12345
+/macOS Install Data
+/macOS Install Data/Locked Files
+/System/Volumes/Update
+/private/var/db/powerlog
+/private/var/db/powerlog/Library/PerfPowerTelemetry
+/private/var/vm/swapfile0
+/Library/Keychains/System.keychain
+/private/var/db/ConfigurationProfiles/Settings

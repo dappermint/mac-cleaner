@@ -1,0 +1,175 @@
+# Protection tables. Data only, no logic. Sections are [name], entries are one
+# per line, # starts a comment.
+#
+# protected-paths      never removed, neither the path nor anything under it
+# system-fast          glob patterns consulted during cleanup, a blanket is correct here
+# system-critical      exact bundle ids that must never be uninstalled, must be exhaustive
+# apple-uninstallable  Apple apps a user actually installed, exempt from the com.apple blanket
+# data-protected       third-party apps holding credentials, sessions, or live databases
+#
+# Bundle matching is case-sensitive glob. macOS ships inconsistent casing across
+# releases, so add both forms exactly as the drift audit prints them.
+
+[protected-paths]
+# Software Update staging. Directory age and process lists cannot prove these
+# stay inactive across a scan-to-delete window.
+/Library/Updates
+/macOS Install Data
+/System/Volumes/Update
+
+# The active PowerLog database. Size and mtime cannot prove Apple closed every
+# SQLite connection to it.
+/private/var/db/powerlog
+
+# Local snapshots. macOS reclaims these itself under pressure and removing them
+# by hand breaks that.
+/Volumes/com.apple.TimeMachine.localsnapshots
+/System/Volumes/Data/.MobileBackups
+
+# Boot and recovery state.
+/private/var/vm
+/private/var/db/dslocal
+/Library/Keychains
+/private/var/db/ConfigurationProfiles
+
+[system-fast]
+com.apple.*
+com.apple.driver.*
+com.apple.security.*
+group.com.apple.*
+com.apple.iWork.*
+com.apple.Safari*
+
+[system-critical]
+com.apple.finder
+com.apple.dock
+com.apple.systempreferences
+com.apple.systemsettings
+com.apple.Safari
+com.apple.mail
+com.apple.Terminal
+com.apple.ActivityMonitor
+com.apple.AddressBook
+com.apple.AppStore
+com.apple.Automator
+com.apple.calculator
+com.apple.iCal
+com.apple.Chess
+com.apple.clock
+com.apple.Console
+com.apple.ScreenContinuity
+com.apple.DigitalColorMeter
+com.apple.DiskUtility
+com.apple.FaceTime
+com.apple.FontBook
+com.apple.freeform
+com.apple.Home
+com.apple.Image_Capture
+com.apple.iBooksX
+com.apple.Maps
+com.apple.MessagesViewService
+com.apple.iChat
+com.apple.exposelauncher
+com.apple.Music
+com.apple.news
+com.apple.Notes
+com.apple.PhotoBooth
+com.apple.Photos
+com.apple.podcasts
+com.apple.Preview
+com.apple.QuickTimePlayerX
+com.apple.reminders
+com.apple.ScriptEditor2
+com.apple.screensharing
+com.apple.screenshot.launcher
+com.apple.shortcuts
+com.apple.stocks
+com.apple.stickies
+com.apple.systemuiserver
+com.apple.TextEdit
+com.apple.tips
+com.apple.TV
+com.apple.VoiceMemos
+com.apple.weather
+com.apple.BootCampAssistant
+com.apple.bootcampassistant
+com.apple.MigrateAssistant
+com.apple.AirPortUtility
+com.apple.audio.AudioMIDISetup
+com.apple.bluetoothaudiod
+com.apple.grapher
+com.apple.keychainaccess
+com.apple.RAIDUtility
+com.apple.SystemProfiler
+com.apple.Ticket-Viewer
+com.apple.VoiceOverUtility
+com.apple.backup.launcher
+com.apple.controlcenter
+com.apple.notificationcenterui
+com.apple.loginwindow
+com.apple.WindowManager
+
+[apple-uninstallable]
+com.apple.dt.Xcode
+com.apple.FinalCut
+com.apple.motionapp
+com.apple.compressor
+com.apple.logic10
+com.apple.mainstage3
+com.apple.garageband10
+com.apple.iWork.Pages
+com.apple.iWork.Numbers
+com.apple.iWork.Keynote
+com.apple.iMovieApp
+com.apple.Aperture
+com.apple.configurator.ui
+com.apple.dt.CommandLineTools
+com.apple.podcastsproducer
+com.apple.playgrounds
+
+[data-protected]
+com.1password.*
+com.agilebits.*
+com.bitwarden.*
+com.dashlane.*
+com.lastpass.*
+com.keepassxc.*
+com.jetbrains.*
+com.google.android.studio*
+com.microsoft.VSCode*
+com.todesktop.*
+dev.zed.*
+com.exafunction.windsurf*
+com.anthropic.*
+com.openai.*
+com.tinyspeck.slackmacgap
+com.hnc.Discord
+ru.keepcoder.Telegram
+com.tdesktop.Telegram
+net.whatsapp.WhatsApp
+com.microsoft.teams*
+us.zoom.xos
+org.signal.Signal
+com.readdle.*
+com.wireguard.*
+com.tunnelbear.*
+com.nordvpn.*
+com.protonvpn.*
+org.mozilla.firefox
+com.docker.docker
+dev.orbstack.OrbStack
+com.parallels.*
+com.vmware.fusion
+com.utmapp.UTM
+com.apple.dt.Xcode
+com.postgresapp.Postgres2
+com.sequel-ace.sequel-ace
+com.tableplus.TablePlus
+com.electron.gpg-suite
+org.gpgtools.*
+com.obsidian.*
+md.obsidian
+com.evernote.Evernote
+notion.id
+com.culturedcode.ThingsMac
+com.omnigroup.*
