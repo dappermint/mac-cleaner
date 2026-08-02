@@ -36,7 +36,7 @@ homebrew_casks:
     # `rat` is the short form. Both names run the same binary.
     binaries:
       - ratatouille
-      - ratatouille: rat
+      - "ratatouille: rat"
     repository:
       owner: dappermint
       name: homebrew-tap
