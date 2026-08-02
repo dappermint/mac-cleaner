@@ -1,4 +1,4 @@
-package main
+package scan
 
 import (
 	"context"
@@ -12,7 +12,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
 )
+
+const roleData = "Data"
 
 const (
 	surfaceKeepPerNode  = 14
@@ -49,15 +53,15 @@ const (
 )
 
 type SurfaceNode struct {
-	Name     string          `json:"name"`
-	Path     string          `json:"path,omitempty"`
-	Kind     NodeKind        `json:"kind"`
-	Category StorageCategory `json:"category,omitempty"`
-	Detail   string          `json:"detail,omitempty"`
-	Bytes    int64           `json:"bytes"`
-	Files    int64           `json:"files,omitempty"`
-	Entries  int64           `json:"entries,omitempty"`
-	Children []*SurfaceNode  `json:"children,omitempty"`
+	Name     string           `json:"name"`
+	Path     string           `json:"path,omitempty"`
+	Kind     NodeKind         `json:"kind"`
+	Category storage.Category `json:"category,omitempty"`
+	Detail   string           `json:"detail,omitempty"`
+	Bytes    int64            `json:"bytes"`
+	Files    int64            `json:"files,omitempty"`
+	Entries  int64            `json:"entries,omitempty"`
+	Children []*SurfaceNode   `json:"children,omitempty"`
 }
 
 type Fault struct {
@@ -67,22 +71,22 @@ type Fault struct {
 }
 
 type Surface struct {
-	Root       *SurfaceNode    `json:"root"`
-	Containers []Container     `json:"containers"`
-	Mounts     []Mount         `json:"mounts"`
-	Devices    []StorageDevice `json:"devices,omitempty"`
-	WalkedAt   time.Time       `json:"walked_at"`
-	Walked     int64           `json:"walked_bytes"`
-	Claimed    int64           `json:"claimed_bytes"`
-	Files      int64           `json:"files"`
-	Denied     int64           `json:"denied_entries"`
-	Loops      int64           `json:"directory_loops"`
-	Hardware   int64           `json:"hardware_faults"`
-	Dedicated  bool            `json:"dedicated_data_volume"`
-	Rootful    bool            `json:"rootful"`
-	Faults     []Fault         `json:"faults,omitempty"`
-	Elapsed    time.Duration   `json:"elapsed_ns"`
-	Issues     []string        `json:"issues,omitempty"`
+	Root       *SurfaceNode            `json:"root"`
+	Containers []storage.Container     `json:"containers"`
+	Mounts     []storage.Mount         `json:"mounts"`
+	Devices    []storage.StorageDevice `json:"devices,omitempty"`
+	WalkedAt   time.Time               `json:"walked_at"`
+	Walked     int64                   `json:"walked_bytes"`
+	Claimed    int64                   `json:"claimed_bytes"`
+	Files      int64                   `json:"files"`
+	Denied     int64                   `json:"denied_entries"`
+	Loops      int64                   `json:"directory_loops"`
+	Hardware   int64                   `json:"hardware_faults"`
+	Dedicated  bool                    `json:"dedicated_data_volume"`
+	Rootful    bool                    `json:"rootful"`
+	Faults     []Fault                 `json:"faults,omitempty"`
+	Elapsed    time.Duration           `json:"elapsed_ns"`
+	Issues     []string                `json:"issues,omitempty"`
 }
 
 func (n *SurfaceNode) Total() int64 {
@@ -102,7 +106,7 @@ type surfaceWalker struct {
 	loops    atomic.Int64
 	hardware atomic.Int64
 	mutex    sync.Mutex
-	hardlink map[inodeKey]struct{}
+	hardlink map[storage.InodeKey]struct{}
 	visited  map[uint64]struct{}
 	faults   []Fault
 }
@@ -112,7 +116,7 @@ func newSurfaceWalker(ctx context.Context, device uint64, home string) *surfaceW
 		ctx:      ctx,
 		device:   device,
 		home:     home,
-		hardlink: make(map[inodeKey]struct{}),
+		hardlink: make(map[storage.InodeKey]struct{}),
 		visited:  make(map[uint64]struct{}),
 	}
 }
@@ -196,7 +200,7 @@ func (w *surfaceWalker) walkDirectory(path string, own int64, depth int) *Surfac
 			files++
 			continue
 		}
-		if deviceID(stat) != w.device {
+		if storage.DeviceID(stat) != w.device {
 			mutex.Lock()
 			children = append(children, &SurfaceNode{
 				Name:   entry.Name(),
@@ -291,7 +295,7 @@ func (w *surfaceWalker) measureQuiet(path string, own int64) int64 {
 			files++
 			continue
 		}
-		if deviceID(stat) != w.device {
+		if storage.DeviceID(stat) != w.device {
 			continue
 		}
 		if !w.enterDirectory(stat) {
@@ -402,7 +406,7 @@ func foldTail(node *SurfaceNode, keep int) {
 }
 
 func (w *surfaceWalker) claimInode(stat *syscall.Stat_t) bool {
-	key := inodeKey{device: deviceID(stat), inode: stat.Ino}
+	key := storage.InodeKey{Device: storage.DeviceID(stat), Inode: stat.Ino}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	if _, exists := w.hardlink[key]; exists {
@@ -435,10 +439,10 @@ func (w *surfaceWalker) record(path string, err error, node *SurfaceNode) {
 	}
 	if hardwareFault(err) {
 		w.hardware.Add(1)
-		w.appendFault(Fault{Path: path, Reason: compactError(err), Hardware: true})
+		w.appendFault(Fault{Path: path, Reason: storage.CompactError(err), Hardware: true})
 		return
 	}
-	w.note(path, compactError(err))
+	w.note(path, storage.CompactError(err))
 }
 
 func (w *surfaceWalker) note(path, reason string) {
@@ -466,23 +470,23 @@ func (s Scanner) buildSurface(ctx context.Context, progress func(files, bytes in
 	surface := Surface{WalkedAt: time.Now(), Rootful: s.Rootful}
 	started := time.Now()
 
-	mounts, err := mountedFilesystems()
+	mounts, err := storage.MountedFilesystems()
 	if err != nil {
-		surface.Issues = append(surface.Issues, "mounted filesystems: "+compactError(err))
+		surface.Issues = append(surface.Issues, "mounted filesystems: "+storage.CompactError(err))
 	}
 	surface.Mounts = mounts
 
-	containers, err := apfsContainers(ctx, s.CommandTimeout, mounts)
+	containers, err := storage.APFSContainers(ctx, s.CommandTimeout, mounts)
 	if err != nil {
-		surface.Issues = append(surface.Issues, "apfs inventory: "+compactError(err))
+		surface.Issues = append(surface.Issues, "apfs inventory: "+storage.CompactError(err))
 	}
 	surface.Containers = containers
 
-	devices, deviceIssues := storageDevices(ctx, s.CommandTimeout, containers)
+	devices, deviceIssues := storage.StorageDevices(ctx, s.CommandTimeout, containers)
 	surface.Devices = devices
 	surface.Issues = append(surface.Issues, deviceIssues...)
 
-	dataPath := dataVolumePath(mounts)
+	dataPath := DataVolumePath(mounts)
 	surface.Dedicated = dataPath != "/"
 	walkRoot := dataPath
 	dataDevice := uint64(0)
@@ -494,7 +498,7 @@ func (s Scanner) buildSurface(ctx context.Context, progress func(files, bytes in
 	if dataDevice == 0 {
 		if info, statErr := os.Lstat(walkRoot); statErr == nil {
 			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-				dataDevice = deviceID(stat)
+				dataDevice = storage.DeviceID(stat)
 			}
 		}
 	}
@@ -534,16 +538,16 @@ func (s Scanner) buildSurface(ctx context.Context, progress func(files, bytes in
 	return surface
 }
 
-func dataVolumePath(mounts []Mount) string {
+func DataVolumePath(mounts []storage.Mount) string {
 	for _, mount := range mounts {
-		if mount.Path == "/System/Volumes/Data" {
+		if mount.Path == storage.DataVolume {
 			return mount.Path
 		}
 	}
 	return "/"
 }
 
-func claimedBytes(containers []Container, dataPath string) int64 {
+func claimedBytes(containers []storage.Container, dataPath string) int64 {
 	for _, container := range containers {
 		for _, volume := range container.Volumes {
 			if volume.MountedAt == dataPath {
@@ -554,7 +558,7 @@ func claimedBytes(containers []Container, dataPath string) int64 {
 	return 0
 }
 
-func assembleSurface(containers []Container, dataPath string, tree *SurfaceNode, denied int64) *SurfaceNode {
+func assembleSurface(containers []storage.Container, dataPath string, tree *SurfaceNode, denied int64) *SurfaceNode {
 	root := &SurfaceNode{Name: "all storage", Kind: NodeSurface}
 	if len(containers) == 0 {
 		root.Children = []*SurfaceNode{tree}
@@ -569,7 +573,7 @@ func assembleSurface(containers []Container, dataPath string, tree *SurfaceNode,
 			Bytes:  container.Ceiling,
 			Detail: containerDetail(container),
 		}
-		volumes := append([]Volume(nil), container.Volumes...)
+		volumes := append([]storage.Volume(nil), container.Volumes...)
 		sort.SliceStable(volumes, func(a, b int) bool { return volumes[a].InUse > volumes[b].InUse })
 		for _, volume := range volumes {
 			child := &SurfaceNode{
@@ -629,13 +633,13 @@ func adoptWalkedTree(tree *SurfaceNode, claimed, denied int64) []*SurfaceNode {
 			Kind:    NodeUnreadable,
 			Bytes:   -1,
 			Entries: denied,
-			Detail:  "permission denied, size unknown; grant Full Disk Access or rerun with sudo --root",
+			Detail:  "permission denied, size unknown; grant Full storage.Disk Access or rerun with sudo --root",
 		})
 	}
 	return children
 }
 
-func containerDetail(container Container) string {
+func containerDetail(container storage.Container) string {
 	parts := make([]string, 0, 2)
 	for _, store := range container.Physical {
 		parts = append(parts, store.Device)
@@ -646,7 +650,7 @@ func containerDetail(container Container) string {
 	return "physical store " + strings.Join(parts, ", ")
 }
 
-func volumeDetail(volume Volume) string {
+func volumeDetail(volume storage.Volume) string {
 	parts := []string{volume.Device, volume.Role()}
 	if volume.MountedAt != "" {
 		parts = append(parts, "at "+volume.MountedAt)
@@ -659,47 +663,47 @@ func volumeDetail(volume Volume) string {
 	return strings.Join(parts, " / ")
 }
 
-func volumeCategory(volume Volume) StorageCategory {
+func volumeCategory(volume storage.Volume) storage.Category {
 	for _, role := range volume.Roles {
 		switch role {
 		case "System":
-			return CategoryMacOS
-		case "Data":
-			return CategorySystemData
+			return storage.CategoryMacOS
+		case roleData:
+			return storage.CategorySystemData
 		}
 	}
 	if strings.EqualFold(volume.Name, "Nix Store") {
-		return CategoryDeveloper
+		return storage.CategoryDeveloper
 	}
-	return CategorySystemData
+	return storage.CategorySystemData
 }
 
-func surfaceCategory(path, home string) StorageCategory {
+func surfaceCategory(path, home string) storage.Category {
 	clean := filepath.Clean(path)
 	base := filepath.Base(clean)
 	switch base {
 	case "Applications":
-		return CategoryApplications
+		return storage.CategoryApplications
 	case "Documents", "Desktop", "Downloads":
-		return CategoryDocuments
+		return storage.CategoryDocuments
 	case "Movies":
-		return CategoryTV
+		return storage.CategoryTV
 	case "Music":
-		return CategoryMusic
+		return storage.CategoryMusic
 	case "Books":
-		return CategoryBooks
+		return storage.CategoryBooks
 	case "Pictures":
-		return CategoryPhotos
+		return storage.CategoryPhotos
 	case ".Trash":
-		return CategoryTrash
+		return storage.CategoryTrash
 	}
 	if home != "" {
 		if relative, err := filepath.Rel(home, clean); err == nil && !strings.HasPrefix(relative, "..") {
-			return categoryForUserData(clean)
+			return storage.CategoryForUserData(clean)
 		}
 	}
 	if strings.HasPrefix(clean, "/Users/") || strings.Contains(clean, "/Data/Users/") {
-		return CategoryOtherUsers
+		return storage.CategoryOtherUsers
 	}
-	return CategorySystemData
+	return storage.CategorySystemData
 }

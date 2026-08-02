@@ -1,10 +1,13 @@
-package main
+package scan
 
 import (
 	"context"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/dappermint/mac-cleaner/internal/storage"
+	"github.com/dappermint/mac-cleaner/internal/text"
 )
 
 const verifyTimeout = 20 * time.Minute
@@ -33,7 +36,7 @@ type Health struct {
 	Signals  []HealthSignal `json:"signals"`
 }
 
-func healthOrder(level HealthLevel) int {
+func HealthOrder(level HealthLevel) int {
 	switch level {
 	case HealthAlarm:
 		return 0
@@ -46,8 +49,8 @@ func healthOrder(level HealthLevel) int {
 	}
 }
 
-func worseLevel(a, b HealthLevel) HealthLevel {
-	if healthOrder(a) <= healthOrder(b) {
+func WorseLevel(a, b HealthLevel) HealthLevel {
+	if HealthOrder(a) <= HealthOrder(b) {
 		return a
 	}
 	return b
@@ -70,19 +73,19 @@ func (h Health) Summary() string {
 	return strings.Join(parts, "  ")
 }
 
-func evaluateHealth(surface Surface, dataPath string) Health {
+func EvaluateHealth(surface Surface, dataPath string) Health {
 	health := Health{Level: HealthOK}
 	health.Signals = append(health.Signals, deviceSignals(surface.Devices)...)
 	health.Signals = append(health.Signals, containerSignals(surface.Containers)...)
 	health.Signals = append(health.Signals, mountSignals(surface.Containers, surface.Mounts, dataPath)...)
 	health.Signals = append(health.Signals, walkSignals(surface)...)
 	for _, signal := range health.Signals {
-		health.Level = worseLevel(health.Level, signal.Level)
+		health.Level = WorseLevel(health.Level, signal.Level)
 	}
 	return health
 }
 
-func deviceSignals(devices []StorageDevice) []HealthSignal {
+func deviceSignals(devices []storage.StorageDevice) []HealthSignal {
 	signals := make([]HealthSignal, 0, len(devices)*6)
 	for _, device := range devices {
 		if strings.Contains(strings.ToLower(device.Media), "disk image") {
@@ -94,7 +97,7 @@ func deviceSignals(devices []StorageDevice) []HealthSignal {
 	return signals
 }
 
-func smartStatusSignal(device StorageDevice) HealthSignal {
+func smartStatusSignal(device storage.StorageDevice) HealthSignal {
 	status := strings.TrimSpace(device.Status)
 	level, detail := HealthOK, "the controller reports no self-test failure"
 	switch {
@@ -112,7 +115,7 @@ func smartStatusSignal(device StorageDevice) HealthSignal {
 	return signal
 }
 
-func nvmeSignals(device StorageDevice) []HealthSignal {
+func nvmeSignals(device storage.StorageDevice) []HealthSignal {
 	var signals []HealthSignal
 
 	if count, ok := device.Metric("MEDIA_ERRORS_0", "MEDIA_ERRORS_1"); ok {
@@ -163,7 +166,7 @@ func nvmeSignals(device StorageDevice) []HealthSignal {
 	return signals
 }
 
-func deviceSignal(device StorageDevice, id, name, value string, level HealthLevel, detail string) HealthSignal {
+func deviceSignal(device storage.StorageDevice, id, name, value string, level HealthLevel, detail string) HealthSignal {
 	return HealthSignal{
 		ID:     id + "-" + device.Device,
 		Name:   name,
@@ -174,7 +177,7 @@ func deviceSignal(device StorageDevice, id, name, value string, level HealthLeve
 	}
 }
 
-func containerSignals(containers []Container) []HealthSignal {
+func containerSignals(containers []storage.Container) []HealthSignal {
 	signals := make([]HealthSignal, 0, len(containers))
 	for _, container := range containers {
 		if container.Ceiling <= 0 {
@@ -199,7 +202,7 @@ func containerSignals(containers []Container) []HealthSignal {
 			ID:     "container-accounting-" + container.Reference,
 			Name:   "container " + container.Reference + " accounting",
 			Level:  level,
-			Value:  humanBytes(gap) + " unattributed",
+			Value:  storage.HumanBytes(gap) + " unattributed",
 			Detail: detail,
 			Source: "diskutil apfs list",
 		})
@@ -207,11 +210,11 @@ func containerSignals(containers []Container) []HealthSignal {
 	return signals
 }
 
-func mountSignals(containers []Container, mounts []Mount, dataPath string) []HealthSignal {
+func mountSignals(containers []storage.Container, mounts []storage.Mount, dataPath string) []HealthSignal {
 	var signals []HealthSignal
 	for _, container := range containers {
 		for _, volume := range container.Volumes {
-			if !volume.ReadOnly || !hasRole(volume, "Data") {
+			if !volume.ReadOnly || !HasRole(volume, "Data") {
 				continue
 			}
 			signals = append(signals, HealthSignal{
@@ -243,7 +246,7 @@ func mountSignals(containers []Container, mounts []Mount, dataPath string) []Hea
 			ID:     "headroom",
 			Name:   "write headroom",
 			Level:  level,
-			Value:  fmt.Sprintf("%s free / %.1f%%", humanBytes(mount.Available), free),
+			Value:  fmt.Sprintf("%s free / %.1f%%", storage.HumanBytes(mount.Available), free),
 			Detail: detail,
 			Source: "statfs " + mount.Path,
 		})
@@ -251,7 +254,7 @@ func mountSignals(containers []Container, mounts []Mount, dataPath string) []Hea
 	return signals
 }
 
-func hasRole(volume Volume, role string) bool {
+func HasRole(volume storage.Volume, role string) bool {
 	for _, candidate := range volume.Roles {
 		if candidate == role {
 			return true
@@ -307,7 +310,7 @@ func walkSignals(surface Surface) []HealthSignal {
 			coverageDetail = "the walk counted more than the volume claims, usually clones counted twice"
 		case surface.Denied > 0 && share > 2:
 			coverageLevel = HealthWatch
-			coverageDetail = "the gap is explained by unreadable trees, grant Full Disk Access or rerun with sudo --root"
+			coverageDetail = "the gap is explained by unreadable trees, grant Full storage.Disk Access or rerun with sudo --root"
 			if surface.Rootful {
 				coverageDetail = "the remaining unreadable trees are protected from root as well, so this gap is expected"
 			}
@@ -319,7 +322,7 @@ func walkSignals(surface Surface) []HealthSignal {
 			ID:     "walk-coverage",
 			Name:   "surface coverage",
 			Level:  coverageLevel,
-			Value:  fmt.Sprintf("%s walked / %s claimed", humanBytes(surface.Walked), humanBytes(surface.Claimed)),
+			Value:  fmt.Sprintf("%s walked / %s claimed", storage.HumanBytes(surface.Walked), storage.HumanBytes(surface.Claimed)),
 			Detail: coverageDetail,
 			Source: "surface walk vs apfs",
 		})
@@ -342,14 +345,14 @@ func walkSignals(surface Surface) []HealthSignal {
 	return signals
 }
 
-func verifySignals(ctx context.Context, containers []Container, dataPath string) []HealthSignal {
+func VerifySignals(ctx context.Context, containers []storage.Container, dataPath string) []HealthSignal {
 	var signals []HealthSignal
 	for _, container := range containers {
 		for _, volume := range container.Volumes {
 			if volume.MountedAt != dataPath {
 				continue
 			}
-			output, err := verifyVolume(ctx, verifyTimeout, volume.Device)
+			output, err := storage.VerifyVolume(ctx, verifyTimeout, volume.Device)
 			level := HealthOK
 			value := "filesystem appears to be OK"
 			detail := "live fsck_apfs found no fault it could name"
@@ -364,7 +367,7 @@ func verifySignals(ctx context.Context, containers []Container, dataPath string)
 				Level:  level,
 				Value:  value,
 				Detail: detail,
-				Source: "diskutil verifyVolume " + volume.Device,
+				Source: "diskutil storage.VerifyVolume " + volume.Device,
 			})
 		}
 	}
@@ -376,7 +379,7 @@ func verifyVerdict(output string) string {
 	for index := len(lines) - 1; index >= 0; index-- {
 		line := strings.TrimSpace(lines[index])
 		if line != "" {
-			return cleanDisplay(line)
+			return text.Clean(line)
 		}
 	}
 	return "verify produced no output"

@@ -1,4 +1,4 @@
-package main
+package storage
 
 import (
 	"bytes"
@@ -98,7 +98,7 @@ func (d StorageDevice) Metric(low, high string) (int64, bool) {
 	return lowValue | d.Metrics[high]<<32, true
 }
 
-func mountedFilesystems() ([]Mount, error) {
+func MountedFilesystems() ([]Mount, error) {
 	count, err := syscall.Getfsstat(nil, mountNoWait)
 	if err != nil {
 		return nil, err
@@ -123,7 +123,7 @@ func mountedFilesystems() ([]Mount, error) {
 		}
 		if info, statErr := os.Lstat(mount.Path); statErr == nil {
 			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-				mount.Device = deviceID(stat)
+				mount.Device = DeviceID(stat)
 			}
 		}
 		mounts = append(mounts, mount)
@@ -131,7 +131,7 @@ func mountedFilesystems() ([]Mount, error) {
 	return mounts, nil
 }
 
-func deviceID(stat *syscall.Stat_t) uint64 {
+func DeviceID(stat *syscall.Stat_t) uint64 {
 	return uint64(uint32(stat.Dev))
 }
 
@@ -164,7 +164,7 @@ type apfsListDocument struct {
 	} `json:"Containers"`
 }
 
-func apfsContainers(ctx context.Context, timeout time.Duration, mounts []Mount) ([]Container, error) {
+func APFSContainers(ctx context.Context, timeout time.Duration, mounts []Mount) ([]Container, error) {
 	raw, err := plistAsJSON(ctx, timeout, "/usr/sbin/diskutil", "apfs", "list", "-plist")
 	if err != nil {
 		return nil, err
@@ -206,7 +206,7 @@ func apfsContainers(ctx context.Context, timeout time.Duration, mounts []Mount) 
 	return containers, nil
 }
 
-func storageDevices(ctx context.Context, timeout time.Duration, containers []Container) ([]StorageDevice, []string) {
+func StorageDevices(ctx context.Context, timeout time.Duration, containers []Container) ([]StorageDevice, []string) {
 	seen := make(map[string]bool)
 	devices := make([]StorageDevice, 0, len(containers))
 	var issues []string
@@ -219,7 +219,7 @@ func storageDevices(ctx context.Context, timeout time.Duration, containers []Con
 			seen[match[1]] = true
 			device, err := storageDevice(ctx, timeout, match[1])
 			if err != nil {
-				issues = append(issues, "device health "+match[1]+": "+compactError(err))
+				issues = append(issues, "device health "+match[1]+": "+CompactError(err))
 				continue
 			}
 			devices = append(devices, device)
@@ -259,8 +259,8 @@ func storageDevice(ctx context.Context, timeout time.Duration, device string) (S
 	return result, nil
 }
 
-func verifyVolume(ctx context.Context, timeout time.Duration, device string) (string, error) {
-	output, err := captureCommand(ctx, timeout, "/usr/sbin/diskutil", "verifyVolume", device)
+func VerifyVolume(ctx context.Context, timeout time.Duration, device string) (string, error) {
+	output, err := CaptureCommand(ctx, timeout, "/usr/sbin/diskutil", "VerifyVolume", device)
 	return output, err
 }
 
@@ -297,7 +297,7 @@ func captureStdinStdout(ctx context.Context, timeout time.Duration, input []byte
 			return nil, fmt.Errorf("timed out after %s", timeout)
 		}
 		if message := strings.TrimSpace(stderr.String()); message != "" {
-			return nil, errors.New(compactError(errors.New(message)))
+			return nil, errors.New(CompactError(errors.New(message)))
 		}
 		return nil, err
 	}

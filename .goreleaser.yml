@@ -1,0 +1,52 @@
+version: 2
+
+project_name: mac-cleaner
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mac-cleaner
+    main: ./cmd/mac-cleaner
+    binary: mac-cleaner
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+universal_binaries:
+  - id: mac-cleaner
+    replace: true
+
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^chore:'
+      - '^docs:'
+      - '^test:'
+
+release:
+  footer: |
+    ## install
+
+    ```sh
+    nix profile install github:dappermint/mac-cleaner
+    ```

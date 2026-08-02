@@ -1,0 +1,42 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - goconst
+    - gocritic
+    - misspell
+    - nakedret
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+
+  settings:
+    goconst:
+      min-len: 4
+      min-occurrences: 4
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      # writes to a terminal or a report buffer have nowhere useful to report a failure
+      - linters: [errcheck]
+        text: 'Error return value of `fmt\.(Fprint|Fprintf|Fprintln)` is not checked'
+      - linters: [unparam, goconst, gocritic]
+        path: _test\.go
+      # terminal control has to run while the context is being cancelled, otherwise
+      # ctrl-c leaves the terminal in raw mode with the cursor hidden
+      - linters: [noctx]
+        path: internal/tui/tui\.go
