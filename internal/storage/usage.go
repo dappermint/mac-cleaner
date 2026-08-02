@@ -197,3 +197,55 @@ func RelativeHome(home, path string) string {
 	}
 	return "~/" + relative
 }
+
+var sizeArgumentPattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)$`)
+
+// ParseSize reads what a person types on a command line: 100M, 1.5GiB, 512k.
+// A bare number is bytes. Decimal and binary units are both accepted and mean
+// what they say, so 1GB is 1000000000 and 1GiB is 1073741824.
+func ParseSize(value string) (int64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, nil
+	}
+	match := sizeArgumentPattern.FindStringSubmatch(trimmed)
+	if match == nil {
+		return 0, fmt.Errorf("cannot read %q as a size", value)
+	}
+	amount, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("cannot read %q as a size", value)
+	}
+	multiplier, ok := sizeMultiplier(match[2])
+	if !ok {
+		return 0, fmt.Errorf("cannot read %q as a size, unknown unit %q", value, match[2])
+	}
+	return int64(math.Round(amount * multiplier)), nil
+}
+
+func sizeMultiplier(unit string) (float64, bool) {
+	// Uppercase first, then drop the trailing B, otherwise a lowercase "kb"
+	// never loses its suffix and falls through as an unknown unit.
+	switch strings.TrimSuffix(strings.ToUpper(unit), "B") {
+	case "":
+		return 1, true
+	case "K":
+		return 1000, true
+	case "KI":
+		return 1024, true
+	case "M":
+		return 1000 * 1000, true
+	case "MI":
+		return 1024 * 1024, true
+	case "G":
+		return 1000 * 1000 * 1000, true
+	case "GI":
+		return 1024 * 1024 * 1024, true
+	case "T":
+		return 1000 * 1000 * 1000 * 1000, true
+	case "TI":
+		return 1024 * 1024 * 1024 * 1024, true
+	default:
+		return 0, false
+	}
+}
