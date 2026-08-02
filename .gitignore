@@ -3,3 +3,6 @@ result-*
 /mac-cleaner
 .direnv/
 .DS_Store
+
+# working notes, not published yet
+docs/
