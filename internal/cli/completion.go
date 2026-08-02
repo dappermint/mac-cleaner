@@ -24,6 +24,7 @@ complete -c ratatouille -n "not __fish_seen_subcommand_from $commands" -a touchi
 complete -c ratatouille -n "not __fish_seen_subcommand_from $commands" -a update -d "how to upgrade this install"
 
 complete -c ratatouille -l root -d "uid 0, adds System Data and other users"
+complete -c ratatouille -l debug -d "write guard and timing diagnostics to stderr"
 complete -c ratatouille -l json -d "machine-readable output"
 complete -c ratatouille -l dry-run -d "change nothing"
 complete -c ratatouille -n "__fish_seen_subcommand_from surface" -l files -d "list the largest files"
@@ -31,6 +32,7 @@ complete -c ratatouille -n "__fish_seen_subcommand_from surface" -l depth -d "le
 complete -c ratatouille -n "__fish_seen_subcommand_from surface" -l min-size -d "large file floor"
 complete -c ratatouille -n "__fish_seen_subcommand_from surface" -a "(__fish_complete_directories)"
 complete -c ratatouille -n "__fish_seen_subcommand_from clean plan" -l all-safe -d "select every safe action"
+complete -c ratatouille -n "__fish_seen_subcommand_from clean" -l external -d "clean a directly mounted external volume"
 complete -c ratatouille -n "__fish_seen_subcommand_from uninstall" -l list -d "installed apps and their exact names"
 complete -c ratatouille -n "__fish_seen_subcommand_from uninstall" -l permanent -d "bypass Trash"
 complete -c ratatouille -n "__fish_seen_subcommand_from status" -l watch -d "keep sampling"
@@ -68,6 +70,7 @@ _ratatouille() {
 
   _arguments -C \
     '--root[uid 0, adds System Data and other users]' \
+    '--debug[write guard and timing diagnostics to stderr]' \
     '--json[machine-readable output]' \
     '1: :->command' \
     '*:: :->argument'
@@ -78,7 +81,8 @@ _ratatouille() {
       case $words[1] in
         surface) _arguments '--files[list the largest files]' '--depth[levels to print]:depth:' \
                             '--min-size[large file floor]:size:' '--verify[live filesystem check]' '*:directory:_files -/' ;;
-        clean|plan) _arguments '--all-safe[select every safe action]' '--dry-run[change nothing]' ;;
+		clean) _arguments '--all-safe[select every safe action]' '--dry-run[change nothing]' '--external[clean external volume]:volume:_files -/' ;;
+		plan) _arguments '--all-safe[select every safe action]' '--dry-run[change nothing]' ;;
         uninstall) _arguments '--list[installed apps and their exact names]' '--permanent[bypass Trash]' '--dry-run[change nothing]' ;;
         purge) _arguments '--all[include recently touched projects]' '--trash[route to Trash]' '--dry-run[change nothing]' ;;
         installer) _arguments '--min-size[size floor]:size:' '--dry-run[change nothing]' ;;
@@ -111,7 +115,7 @@ _ratatouille() {
 
   case "${COMP_WORDS[1]}" in
     surface)   COMPREPLY=( $(compgen -W "--files --depth --min-size --limit --verify --json --root" -- "$current") ) ;;
-    clean)     COMPREPLY=( $(compgen -W "--all-safe --dry-run --deep --yes --root" -- "$current") ) ;;
+    clean)     COMPREPLY=( $(compgen -W "--all-safe --external --dry-run --deep --yes --root --debug" -- "$current") ) ;;
     plan)      COMPREPLY=( $(compgen -W "--all-safe --deep --root" -- "$current") ) ;;
     uninstall) COMPREPLY=( $(compgen -W "--list --dry-run --permanent --leftovers-only --json" -- "$current") ) ;;
     purge)     COMPREPLY=( $(compgen -W "--all --trash --dry-run --min-age --json --yes" -- "$current") ) ;;
@@ -121,7 +125,7 @@ _ratatouille() {
     config)    COMPREPLY=( $(compgen -W "show path whitelist optimize-whitelist purge-paths" -- "$current") ) ;;
     completion) COMPREPLY=( $(compgen -W "fish zsh bash" -- "$current") ) ;;
     touchid)   COMPREPLY=( $(compgen -W "status enable disable" -- "$current") ) ;;
-    *)         COMPREPLY=( $(compgen -W "--json --root" -- "$current") ) ;;
+    *)         COMPREPLY=( $(compgen -W "--json --root --debug" -- "$current") ) ;;
   esac
 }
 

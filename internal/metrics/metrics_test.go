@@ -257,3 +257,34 @@ func TestLevelBands(t *testing.T) {
 		}
 	}
 }
+
+func TestPerCoreDelta(t *testing.T) {
+	cores := parseCoreTimes("10 0 10 80 0  20 0 20 60 0", "20 0 20 160 0  60 0 40 100 0")
+	if len(cores) != 2 {
+		t.Fatalf("cores = %+v", cores)
+	}
+	if math.Abs(cores[0].Busy-20) > 0.01 || math.Abs(cores[1].Busy-60) > 0.01 {
+		t.Fatalf("core deltas = %+v", cores)
+	}
+}
+
+func TestIORegMetricsAllowAppleSpacing(t *testing.T) {
+	matches := ioregMetric.FindAllStringSubmatch(`"Device Utilization %" = 48,"Renderer Utilization %"=31`, -1)
+	if len(matches) != 2 || matches[0][2] != "48" || matches[1][2] != "31" {
+		t.Fatalf("matches = %v", matches)
+	}
+}
+
+func TestTrackerOnlyAlertsAfterThreeHotSamples(t *testing.T) {
+	tracker := NewTracker()
+	snapshot := Snapshot{At: time.Now(), Processes: []Process{{PID: 42, Name: "worker", CPU: 95}}}
+	for sample := 1; sample <= 3; sample++ {
+		observed := tracker.Observe(snapshot)
+		if sample < 3 && len(observed.Alerts) != 0 {
+			t.Fatalf("alerted after %d samples: %+v", sample, observed.Alerts)
+		}
+		if sample == 3 && (len(observed.Alerts) != 1 || observed.Alerts[0].Kind != "sustained-cpu") {
+			t.Fatalf("third sample did not alert: %+v", observed.Alerts)
+		}
+	}
+}

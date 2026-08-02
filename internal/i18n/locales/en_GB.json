@@ -1,0 +1,30 @@
+{
+  "locale": "en_GB",
+  "name": "English (United Kingdom)",
+  "messages": {
+    "app.error": "ratatouille: %s\n",
+    "cli.config_error": "config: %s\n",
+    "cli.locale_fallback": "config: locale %q is unavailable, using en_GB\n",
+    "cli.macos_only": "this tool only supports macOS",
+    "cli.unknown_command": "unknown command %q, try ratatouille help",
+    "cli.usage": "ratatouille\n\nusage:\n  ratatouille [--root] [--debug]\n  ratatouille scan [--root] [--deep] [--surface] [--verify] [--json]\n  ratatouille surface [path] [--root] [--verify] [--depth n] [--json]\n  ratatouille surface [path] --files [--min-size 100MiB] [--limit n]\n  ratatouille plan [--root] [--deep] [--all-safe] <item-id>...\n  ratatouille clean [--root] [--deep] [--all-safe] [--dry-run] <item-id>...\n  ratatouille clean --external /Volumes/name [--dry-run]\n  ratatouille uninstall [--list] [--dry-run] [--permanent] [--json] <app>...\n  ratatouille purge [--all] [--trash] [--dry-run] [--json]\n  ratatouille installer [--min-size 16MiB] [--dry-run] [--json]\n  ratatouille optimize [--list] [--dry-run] [--only ids] [--skip ids] [--json]\n  ratatouille status [--watch] [--interval 2s] [--explain] [--json]\n  ratatouille config <show|path|keys|whitelist|optimize-whitelist|purge-paths>\n  ratatouille completion <fish|zsh|bash>\n  ratatouille touchid <status|enable|disable>\n  ratatouille update\n  ratatouille history [--since 7d] [--limit n] [--id run] [--json]\n\n--root requires uid 0 and adds System Data, macOS and Other Users inventory\n--surface accounts for every byte of the data volume, including what it cannot read\n--verify runs a live filesystem check and requires uid 0\n--debug writes guard and timing diagnostics to stderr\n\nevery removal is recorded in ~/Library/Logs/ratatouille/operations.jsonl\nRATATOUILLE_NO_OPLOG=1 turns that off, RATATOUILLE_DRY_RUN=1 forces dry-run\n",
+    "surface.no_large_files": "no files above the size floor",
+    "tui.apps.header": "      size  scope   application",
+    "tui.apps.none": "no applications found",
+    "tui.empty.health": "no health signals were gathered",
+    "tui.empty.rows": "no rows",
+    "tui.empty.surface": "no surface was measured",
+    "tui.launch.cached": "cached surface from %s ago, live refresh running",
+    "tui.launch.elapsed": "elapsed %s",
+    "tui.launch.footer": "read-only scan  ctrl-c abort",
+    "tui.launch.reading_capacity": "reading physical capacity from the data volume",
+    "tui.scope.root": "root",
+    "tui.scope.user": "user",
+    "tui.status.none": "no live sample",
+    "tui.view.actions": "actions",
+    "tui.view.apps": "apps",
+    "tui.view.health": "health",
+    "tui.view.status": "status",
+    "tui.view.surface": "surface"
+  }
+}

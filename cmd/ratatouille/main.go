@@ -9,6 +9,9 @@ import (
 	"syscall"
 
 	"github.com/dappermint/ratatouille/internal/cli"
+	"github.com/dappermint/ratatouille/internal/exitcode"
+	"github.com/dappermint/ratatouille/internal/i18n"
+	"github.com/dappermint/ratatouille/internal/safety"
 )
 
 var version = "dev"
@@ -24,8 +27,11 @@ func run() int {
 		if errors.Is(err, context.Canceled) {
 			return 0
 		}
-		fmt.Fprintln(os.Stderr, "ratatouille:", err)
-		return 1
+		fmt.Fprint(os.Stderr, i18n.EnglishGB().T("app.error", err))
+		if safety.Refused(err) {
+			return exitcode.Refused
+		}
+		return exitcode.Code(err)
 	}
 	return 0
 }

@@ -14,11 +14,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dappermint/ratatouille/internal/i18n"
 	"github.com/dappermint/ratatouille/internal/keymap"
+	"github.com/dappermint/ratatouille/internal/metrics"
 	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
 	"github.com/dappermint/ratatouille/internal/text"
+	"github.com/dappermint/ratatouille/internal/uninstall"
 )
 
 const (
@@ -82,17 +85,19 @@ func (terminal *rawTerminal) Restore() {
 }
 
 type launchState struct {
-	label   string
-	started time.Time
-	order   []string
-	stages  map[string]scan.ScanProgress
-	disk    storage.Disk
-	color   bool
-	rootful bool
+	label     string
+	started   time.Time
+	order     []string
+	stages    map[string]scan.ScanProgress
+	disk      storage.Disk
+	color     bool
+	rootful   bool
+	cached    *scan.Report
+	localizer *i18n.Localizer
 }
 
 func tuiScanOptions(rootful bool) scan.Options {
-	return scan.Options{Deep: true, Rootful: rootful, Surface: true}
+	return scan.Options{Deep: true, Rootful: rootful, Surface: true, MinFileBytes: 512 * 1024 * 1024, LargeFileLimit: 100}
 }
 
 func scanWithLaunch(ctx context.Context, home string, options scan.Options, identity *storage.CommandIdentity, renderer *screenRenderer, resize <-chan os.Signal, label string) (scan.Report, error) {
@@ -106,11 +111,15 @@ func scanWithLaunch(ctx context.Context, home string, options scan.Options, iden
 		}
 	}
 	state := launchState{
-		label:   label,
-		started: time.Now(),
-		stages:  make(map[string]scan.ScanProgress),
-		color:   os.Getenv("NO_COLOR") == "",
-		rootful: options.Rootful,
+		label:     label,
+		started:   time.Now(),
+		stages:    make(map[string]scan.ScanProgress),
+		color:     os.Getenv("NO_COLOR") == "",
+		rootful:   options.Rootful,
+		localizer: i18n.FromContext(ctx),
+	}
+	if cached, err := scan.LoadCachedReport(home, options.Rootful); err == nil {
+		state.cached = &cached
 	}
 
 	state.render(renderer)
@@ -179,13 +188,13 @@ func (state *launchState) render(renderer *screenRenderer) {
 	if hostname != "" {
 		title += " / " + text.Clean(hostname)
 	}
-	scope := "user"
+	scope := state.localizer.T("tui.scope.user")
 	if state.rootful {
-		scope = "root"
+		scope = state.localizer.T("tui.scope.root")
 	}
 	lines := []string{
 		state.bold(colorCyan, text.Truncate(text.JoinEdges(title, "scan / "+scope, width), width)),
-		state.paint(colorInk, text.Truncate(text.JoinEdges(state.label, "elapsed "+text.Duration(now.Sub(state.started)), width), width)),
+		state.paint(colorInk, text.Truncate(text.JoinEdges(state.label, state.localizer.T("tui.launch.elapsed", text.Duration(now.Sub(state.started))), width), width)),
 	}
 
 	if state.disk.Total > 0 {
@@ -197,7 +206,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 		lines = append(lines, rail)
 	} else {
 		lines = append(lines,
-			state.paint(colorFog, text.Truncate("reading physical capacity from the data volume", width)),
+			state.paint(colorFog, text.Truncate(state.localizer.T("tui.launch.reading_capacity"), width)),
 			state.paint(colorFog, strings.Repeat("·", width)),
 		)
 	}
@@ -208,6 +217,18 @@ func (state *launchState) render(renderer *screenRenderer) {
 		progressLine += fmt.Sprintf("  running=%d", running)
 	}
 	lines = append(lines, state.paint(colorFog, text.Truncate(progressLine, width)))
+	if state.cached != nil && surfaceRoot(*state.cached) != nil && height-len(lines) > 5 {
+		age := time.Since(state.cached.GeneratedAt)
+		lines = append(lines, state.paint(colorFog, text.Truncate(state.localizer.T("tui.launch.cached", text.Duration(age)), width)))
+		preview := tuiState{
+			report: *state.cached, expanded: defaultExpansion(surfaceRoot(*state.cached), state.cached.Disk.Path), color: state.color, localizer: state.localizer,
+		}
+		rows := preview.surfaceRows()
+		limit := min(len(rows), min(6, height-len(lines)-3))
+		for index := 0; index < limit; index++ {
+			lines = append(lines, preview.surfaceLine(rows[index], false, width))
+		}
+	}
 
 	stageRows := height - len(lines) - 1
 	if stageRows < 1 {
@@ -219,7 +240,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 	for len(lines) < height-1 {
 		lines = append(lines, "")
 	}
-	footer := "read-only scan  ctrl-c abort"
+	footer := state.localizer.T("tui.launch.footer")
 	lines = append(lines, state.paint(colorFog, text.Truncate(footer, width)))
 	if len(lines) > height {
 		lines = lines[:height]
@@ -337,10 +358,12 @@ type tuiView int
 const (
 	viewSurface tuiView = iota
 	viewActions
+	viewApps
 	viewHealth
+	viewStatus
 )
 
-var tuiViewOrder = []tuiView{viewSurface, viewActions, viewHealth}
+var tuiViewOrder = []tuiView{viewSurface, viewActions, viewApps, viewHealth, viewStatus}
 
 func (v tuiView) String() string {
 	switch v {
@@ -348,30 +371,50 @@ func (v tuiView) String() string {
 		return "surface"
 	case viewActions:
 		return "actions"
-	default:
+	case viewApps:
+		return "apps"
+	case viewHealth:
 		return "health"
+	default:
+		return "status"
 	}
 }
 
 type tuiState struct {
-	report      scan.Report
-	selected    map[string]bool
-	view        tuiView
-	cursors     [3]int
-	offsets     [3]int
-	expanded    map[string]bool
-	marked      map[string]bool
-	markedBytes map[string]int64
-	keys        *keymap.Map
-	configPath  string
-	mode        keymap.Mode
-	pending     string
-	command     string
-	anchor      int
-	filterIndex int
-	notice      string
-	color       bool
-	rootful     bool
+	report       scan.Report
+	selected     map[string]bool
+	view         tuiView
+	cursors      [5]int
+	offsets      [5]int
+	expanded     map[string]bool
+	marked       map[string]bool
+	markedBytes  map[string]int64
+	keys         *keymap.Map
+	configPath   string
+	mode         keymap.Mode
+	pending      string
+	command      string
+	anchor       int
+	filterIndex  int
+	notice       string
+	color        bool
+	rootful      bool
+	apps         []uninstall.App
+	selectedApps map[string]bool
+	status       metrics.Snapshot
+	tracker      *metrics.Tracker
+	localizer    *i18n.Localizer
+}
+
+func (state *tuiState) t(key string) string {
+	if state.localizer == nil {
+		state.localizer = i18n.EnglishGB()
+	}
+	return state.localizer.T(key)
+}
+
+func (state *tuiState) viewName() string {
+	return state.t("tui.view." + state.view.String())
 }
 
 func (state *tuiState) cursor() int {
@@ -409,21 +452,29 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 	}
 	defer terminal.Restore()
 
+	tracker := metrics.NewTracker()
 	state := tuiState{
-		report:      report,
-		selected:    make(map[string]bool),
-		expanded:    defaultExpansion(surfaceRoot(report), report.Disk.Path),
-		marked:      make(map[string]bool),
-		markedBytes: make(map[string]int64),
-		keys:        keys,
-		configPath:  configPath,
-		mode:        keymap.Normal,
-		anchor:      -1,
-		color:       os.Getenv("NO_COLOR") == "",
-		rootful:     rootful,
+		report:       report,
+		selected:     make(map[string]bool),
+		expanded:     defaultExpansion(surfaceRoot(report), report.Disk.Path),
+		marked:       make(map[string]bool),
+		markedBytes:  make(map[string]int64),
+		keys:         keys,
+		configPath:   configPath,
+		mode:         keymap.Normal,
+		anchor:       -1,
+		color:        os.Getenv("NO_COLOR") == "",
+		rootful:      rootful,
+		apps:         uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity}),
+		selectedApps: make(map[string]bool),
+		status:       tracker.Observe(metrics.Collect(ctx)),
+		tracker:      tracker,
+		localizer:    i18n.FromContext(ctx),
 	}
 	state.view = state.openingView()
 	presses, resumeKeys := readKeyStream(ctx)
+	statusTicker := time.NewTicker(2 * time.Second)
+	defer statusTicker.Stop()
 
 	for {
 		state.render(renderer)
@@ -432,6 +483,11 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 			return ctx.Err()
 		case <-resize:
 			renderer.Resize()
+			continue
+		case <-statusTicker.C:
+			if state.view == viewStatus {
+				state.status = state.tracker.Observe(metrics.Collect(ctx))
+			}
 			continue
 		case event := <-presses:
 			if event.err != nil {
@@ -481,8 +537,12 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				state.view = viewSurface
 			case keymap.ViewActions:
 				state.view = viewActions
+			case keymap.ViewApps:
+				state.view = viewApps
 			case keymap.ViewHealth:
 				state.view = viewHealth
+			case keymap.ViewStatus:
+				state.view = viewStatus
 			case keymap.Unfold:
 				if state.view == viewSurface {
 					state.toggleSurfaceRow()
@@ -505,6 +565,10 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 					state.toggleSurfaceRow()
 					break
 				}
+				if state.view == viewApps {
+					state.toggleApp()
+					break
+				}
 				state.applyToRange(state.toggleAt)
 			case keymap.ToggleSafe:
 				state.toggleSafe()
@@ -523,6 +587,12 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 			case keymap.Help:
 				state.showHelp(renderer)
 			case keymap.Execute, keymap.ExecuteMarks:
+				if state.view == viewApps {
+					if err := state.executeApps(ctx, home, rootful, identity, funnel, terminal, renderer, out); err != nil {
+						return err
+					}
+					break
+				}
 				var items []scan.Item
 				if action == keymap.ExecuteMarks {
 					marked, ok := state.markedItem(identity)
@@ -566,16 +636,26 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 					return scanErr
 				}
 				state.reset(report)
+				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
 				if err := terminal.Enter(); err != nil {
 					return err
 				}
 			case keymap.Rescan:
+				if state.view == viewStatus {
+					state.status = state.tracker.Observe(metrics.Collect(ctx))
+					break
+				}
+				if state.view == viewApps {
+					state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
+					break
+				}
 				terminal.Restore()
 				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(rootful), identity, renderer, resize, "indexing storage")
 				if scanErr != nil {
 					return scanErr
 				}
 				state.reset(report)
+				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
 				if err := terminal.Enter(); err != nil {
 					return err
 				}
@@ -621,8 +701,8 @@ func readKeyStream(ctx context.Context) (<-chan keyResult, chan<- struct{}) {
 func (state *tuiState) reset(report scan.Report) {
 	state.report = report
 	state.selected = make(map[string]bool)
-	state.cursors = [3]int{}
-	state.offsets = [3]int{}
+	state.cursors = [5]int{}
+	state.offsets = [5]int{}
 	state.filterIndex = 0
 	state.notice = ""
 	state.expanded = defaultExpansion(surfaceRoot(report), report.Disk.Path)
@@ -689,11 +769,11 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	if hostname != "" {
 		title += " / " + text.Clean(hostname)
 	}
-	scope := "user"
+	scope := state.t("tui.scope.user")
 	if state.rootful {
-		scope = "root"
+		scope = state.t("tui.scope.root")
 	}
-	lines := []string{state.bold(colorCyan, text.Truncate(text.JoinEdges(title, state.view.String()+" / "+scope, width), width))}
+	lines := []string{state.bold(colorCyan, text.Truncate(text.JoinEdges(title, state.viewName()+" / "+scope, width), width))}
 
 	chosen := scan.SelectedItems(state.report, state.selected)
 	direct, toTrash, _ := scan.SelectionTotals(chosen)
@@ -703,8 +783,12 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	switch state.view {
 	case viewSurface:
 		lines = append(lines, state.surfaceSummary(width))
+	case viewApps:
+		lines = append(lines, state.appSummary(width))
 	case viewHealth:
 		lines = append(lines, state.healthSummary(width))
+	case viewStatus:
+		lines = append(lines, state.liveStatusSummary(width))
 	default:
 		lines = append(lines, state.selectionLine(chosen, direct, toTrash, width))
 	}
@@ -717,6 +801,10 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 		lines = append(lines, state.tableHeader(width))
 	case viewSurface:
 		lines = append(lines, state.paint(colorFog, text.Truncate(surfaceLegend(state.report), width)))
+	case viewApps:
+		lines = append(lines, state.appTableHeader(width))
+	case viewStatus:
+		lines = append(lines, state.paint(colorFog, text.Truncate("live sample, refreshed every 2s", width)))
 	}
 	return lines
 }
@@ -857,6 +945,9 @@ func (state *tuiState) surfaceSummary(width int) string {
 		return state.paint(colorAmber, text.Truncate(line, width))
 	}
 	line := fmt.Sprintf("data volume explained %.1f%%  %s of %s", covered, storage.HumanBytes(surface.Walked), storage.HumanBytes(surface.Claimed))
+	if len(state.report.Insights) > 0 {
+		line += fmt.Sprintf("  insights=%d", len(state.report.Insights))
+	}
 	return state.paint(color, text.Truncate(line, width))
 }
 
@@ -878,6 +969,10 @@ func (state *tuiState) rowCount() int {
 		return len(state.surfaceRows())
 	case viewHealth:
 		return len(state.healthRows())
+	case viewApps:
+		return len(state.apps)
+	case viewStatus:
+		return len(state.statusRows())
 	default:
 		return len(state.filteredIndices())
 	}
@@ -891,7 +986,7 @@ func (state *tuiState) bodyLines(width, visibleRows int) []string {
 	case viewSurface:
 		rows := state.surfaceRows()
 		if len(rows) == 0 {
-			return []string{state.paint(colorFog, text.Truncate("  no surface was measured", width))}
+			return []string{state.paint(colorFog, text.Truncate("  "+state.t("tui.empty.surface"), width))}
 		}
 		for position := offset; position < len(rows) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.surfaceLine(rows[position], position == cursor, width))
@@ -899,15 +994,27 @@ func (state *tuiState) bodyLines(width, visibleRows int) []string {
 	case viewHealth:
 		rows := state.healthRows()
 		if len(rows) == 0 {
-			return []string{state.paint(colorFog, text.Truncate("  no health signals were gathered", width))}
+			return []string{state.paint(colorFog, text.Truncate("  "+state.t("tui.empty.health"), width))}
 		}
 		for position := offset; position < len(rows) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.healthLine(rows[position], position == cursor, width))
 		}
+	case viewApps:
+		if len(state.apps) == 0 {
+			return []string{state.paint(colorFog, text.Truncate("  "+state.t("tui.apps.none"), width))}
+		}
+		for position := offset; position < len(state.apps) && position < offset+visibleRows; position++ {
+			lines = append(lines, state.appLine(state.apps[position], position == cursor, width))
+		}
+	case viewStatus:
+		rows := state.statusRows()
+		for position := offset; position < len(rows) && position < offset+visibleRows; position++ {
+			lines = append(lines, state.statusMetricLine(rows[position], position == cursor, width))
+		}
 	default:
 		indices := state.filteredIndices()
 		if len(indices) == 0 {
-			return []string{state.paint(colorFog, text.Truncate("  no rows", width))}
+			return []string{state.paint(colorFog, text.Truncate("  "+state.t("tui.empty.rows"), width))}
 		}
 		for position := offset; position < len(indices) && position < offset+visibleRows; position++ {
 			lines = append(lines, state.itemLine(state.report.Items[indices[position]], position == cursor, width))
@@ -922,6 +1029,10 @@ func (state *tuiState) inspectorLines(width, lineCount int) []string {
 		return state.surfaceInspector(width, lineCount)
 	case viewHealth:
 		return state.healthInspector(width, lineCount)
+	case viewApps:
+		return state.appInspector(width, lineCount)
+	case viewStatus:
+		return state.statusInspector(width, lineCount)
 	default:
 		return state.inspector(width, lineCount)
 	}
@@ -929,7 +1040,7 @@ func (state *tuiState) inspectorLines(width, lineCount int) []string {
 
 func (state *tuiState) cycleView() {
 	state.view = tuiViewOrder[(int(state.view)+1)%len(tuiViewOrder)]
-	state.notice = "view=" + state.view.String()
+	state.notice = "view=" + state.viewName()
 }
 
 func (state *tuiState) openingView() tuiView {
@@ -1238,7 +1349,7 @@ func (state *tuiState) showHelp(renderer *screenRenderer) {
 			keys := strings.Join(state.keys.Keys(keymap.Visual_, action), "  ")
 			plain = append(plain, fmt.Sprintf("%-14s %s over the selected rows", keys, keymap.Describe[action]))
 		}
-		plain = append(plain, "", "command line", ":surface :actions :health :clear :marks :q")
+		plain = append(plain, "", "command line", ":surface :actions :apps :health :status :clear :marks :q")
 	}
 	plain = append(plain,
 		"",
@@ -1401,7 +1512,7 @@ func spaceLabel(freePercent float64) string {
 func keyGuide(width int, view tuiView) string {
 	if view == viewSurface {
 		if width >= 100 {
-			return "jk move  hl fold  v view  1 surface 2 actions 3 health  r scan  ? keys  q quit"
+			return "jk move  hl fold  v view  1 surface 2 actions 3 apps 4 health 5 status  r scan  ? keys  q quit"
 		}
 		if width >= 72 {
 			return "jk move  hl fold  v view  r scan  ? keys  q quit"
@@ -1413,6 +1524,15 @@ func keyGuide(width int, view tuiView) string {
 			return "jk move  v view  r scan  ? keys  q quit"
 		}
 		return "jk move  v view  q quit"
+	}
+	if view == viewApps {
+		if width >= 72 {
+			return "jk move  space mark  c uninstall  v view  r scan  ? keys  q quit"
+		}
+		return "jk move  space mark  c uninstall  q quit"
+	}
+	if view == viewStatus {
+		return "jk move  v view  r sample  ? keys  q quit"
 	}
 	if width >= 100 {
 		return "jk move  tab risk  space mark  a safe  enter inspect  c execute  v view  r scan  q quit"

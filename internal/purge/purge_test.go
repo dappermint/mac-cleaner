@@ -162,3 +162,20 @@ func TestTotal(t *testing.T) {
 		t.Errorf("Total = %d, want 42", got)
 	}
 }
+
+func TestArtifactChangeInvalidatesPreview(t *testing.T) {
+	root := t.TempDir()
+	projectPath := project(t, root, "changing", "dist")
+	age(t, projectPath, 30*24*time.Hour)
+	artifacts, _ := Find(context.Background(), root, Options{Roots: []string{root}})
+	if len(artifacts) != 1 || !Unchanged(artifacts[0]) {
+		t.Fatalf("fresh preview was not valid: %+v", artifacts)
+	}
+	stamp := time.Now().Add(time.Minute)
+	if err := os.Chtimes(artifacts[0].Path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if Unchanged(artifacts[0]) {
+		t.Fatal("artifact modified after preview was still accepted")
+	}
+}

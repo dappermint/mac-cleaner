@@ -35,6 +35,15 @@ func TestRendererAddressesRowsWithoutTerminalNewlines(t *testing.T) {
 	}
 }
 
+func TestStatusScoreAndPressureColoursRunInOppositeDirections(t *testing.T) {
+	if scoreColour(100) != colorMint || scoreColour(0) != colorCoral {
+		t.Fatal("load score colour treats a healthy score as pressure")
+	}
+	if pressureColour(100) != colorCoral || pressureColour(0) != colorMint {
+		t.Fatal("pressure colour treats high utilisation as healthy")
+	}
+}
+
 func TestTUIFiltersKeepCursorOnVisibleItems(t *testing.T) {
 	state := tuiState{
 		report: scan.Report{Items: []scan.Item{

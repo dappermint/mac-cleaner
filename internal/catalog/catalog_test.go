@@ -21,10 +21,12 @@ func testEnv(t *testing.T, home string) Env {
 		t.Fatalf("loading the whitelist: %v", err)
 	}
 	return Env{
-		Home:      home,
-		Whitelist: whitelist,
-		Processes: map[string]bool{},
-		Now:       time.Now(),
+		Home:           home,
+		Whitelist:      whitelist,
+		Processes:      map[string]bool{},
+		ProcessesKnown: true,
+		InstalledKnown: true,
+		Now:            time.Now(),
 	}
 }
 
@@ -56,6 +58,19 @@ func TestEveryTargetCarriesItsEvidence(t *testing.T) {
 		if strings.TrimSpace(target.Evidence) == "" {
 			t.Errorf("%s has no evidence", target.ID)
 		}
+		if target.Qualification != EvidenceObserved && target.Qualification != EvidencePending {
+			t.Errorf("%s has no evidence qualification", target.ID)
+		}
+		if target.Qualification == EvidenceObserved {
+			if len(target.Observations) == 0 {
+				t.Errorf("%s is observed without an observation", target.ID)
+			}
+			for _, observation := range target.Observations {
+				if observation.Product == "" || observation.Version == "" || observation.MacOS == "" || observation.Bytes <= 0 || observation.ObservedAt.IsZero() {
+					t.Errorf("%s has an incomplete observation: %+v", target.ID, observation)
+				}
+			}
+		}
 		if target.Group == "" {
 			t.Errorf("%s has no group", target.ID)
 		}
@@ -74,6 +89,12 @@ func TestEveryTargetCarriesItsEvidence(t *testing.T) {
 	}
 }
 
+func TestParityCatalogueCount(t *testing.T) {
+	if count := len(All()); count != 99 {
+		t.Fatalf("catalogue has %d targets, update the pinned parity ledger", count)
+	}
+}
+
 func TestEveryGroupIsOrdered(t *testing.T) {
 	known := make(map[Group]bool, len(GroupOrder))
 	for _, group := range GroupOrder {
@@ -83,6 +104,18 @@ func TestEveryGroupIsOrdered(t *testing.T) {
 		if !known[target.Group] {
 			t.Errorf("%s is in group %q, which is not in GroupOrder", target.ID, target.Group)
 		}
+	}
+}
+
+func TestProcessGuardFailsClosedWithoutAProcessList(t *testing.T) {
+	guard := ProcessNotRunning("Example")
+	ok, reason := guard.Allow(context.Background(), Env{}, "/Users/someone/Library/Caches/example")
+	if ok || !strings.Contains(reason, "unavailable") {
+		t.Fatalf("unknown process state was allowed: ok=%v reason=%q", ok, reason)
+	}
+	ok, reason = guard.Allow(context.Background(), Env{ProcessesKnown: true, Processes: map[string]bool{}}, "/Users/someone/Library/Caches/example")
+	if !ok || reason != "" {
+		t.Fatalf("known empty process state was refused: ok=%v reason=%q", ok, reason)
 	}
 }
 
@@ -100,6 +133,32 @@ func TestLiteralPathsSurviveTheValidator(t *testing.T) {
 				t.Errorf("%s targets %s, which the validator refuses: %v", target.ID, path, err)
 			}
 		}
+	}
+}
+
+func TestAbsoluteGlobDoesNotMoveUnderTheHome(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "rotated.gz"), 1)
+	target := Target{Paths: []PathSpec{Glob(filepath.Join(root, "*.gz"))}}
+	paths := target.Expand(context.Background(), Env{Home: "/Users/someone"})
+	if len(paths) != 1 || paths[0] != filepath.Join(root, "rotated.gz") {
+		t.Fatalf("absolute glob paths = %v", paths)
+	}
+}
+
+func TestFinderMetadataSkipsTrashAndSymlinkedTrees(t *testing.T) {
+	home := t.TempDir()
+	visible := filepath.Join(home, "Documents", ".DS_Store")
+	write(t, visible, 1)
+	write(t, filepath.Join(home, ".Trash", ".DS_Store"), 1)
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, ".DS_Store"), 1)
+	if err := os.Symlink(outside, filepath.Join(home, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	paths := finderMetadata(home)
+	if len(paths) != 1 || paths[0] != visible {
+		t.Fatalf("finder metadata = %v", paths)
 	}
 }
 
@@ -232,6 +291,29 @@ func TestOnePathIsCountedOnce(t *testing.T) {
 	}
 }
 
+func TestRefusedSpecificTargetStillOwnsItsPath(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "Library", "Caches", "org.example.tool")
+	write(t, filepath.Join(path, "blob"), 4096)
+	env := testEnv(t, home)
+	env.Processes["tool"] = true
+
+	specific := Target{
+		ID: "specific", Name: "specific", Group: GroupDeveloper,
+		Category: storage.CategoryDeveloper, Risk: RiskSafe, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Home("Library/Caches/org.example.tool")}, Guards: []Guard{ProcessNotRunning("tool")}, Evidence: "fixture",
+	}
+	broad := Target{
+		ID: "broad", Name: "broad", Group: GroupLeftovers,
+		Category: storage.CategorySystemData, Risk: RiskReview, Recovery: safety.RecoveryTrash,
+		Paths: []PathSpec{Glob("Library/Caches/*")}, Evidence: "fixture", NotTargets: []string{"specific targets"},
+	}
+	candidates := Resolve(context.Background(), env, []Target{specific, broad}, Options{})
+	if len(candidates[0].Measurements) != 0 || len(candidates[1].Measurements) != 0 {
+		t.Fatalf("guard-refused specific path leaked into a broad target: %+v", candidates)
+	}
+}
+
 // A sweep must not take a directory a specific target knows how to handle,
 // because the specific target is the one carrying the process guard.
 func TestSpecificTargetsClaimBeforeSweeps(t *testing.T) {
@@ -352,8 +434,8 @@ func TestBundleFromContainer(t *testing.T) {
 }
 
 // AppAbsent decides that an application no longer exists, and then something
-// removes its data on the strength of that. An empty index means the scan could
-// not tell, which must never read as "it is gone".
+// removes its data on the strength of that. An incomplete index means the scan
+// could not tell, which must never read as "it is gone".
 func TestAppAbsentRefusesWhenItCannotTell(t *testing.T) {
 	home := t.TempDir()
 	write(t, filepath.Join(home, "Library", "Caches", "com.example.app", "blob"), 4096)
@@ -371,7 +453,7 @@ func TestAppAbsentRefusesWhenItCannotTell(t *testing.T) {
 	if len(candidates[0].Paths()) != 0 {
 		t.Fatal("an empty installed index allowed a removal")
 	}
-	if len(candidates[0].Skipped) == 0 || !strings.Contains(candidates[0].Skipped[0].Reason, "empty") {
+	if len(candidates[0].Skipped) == 0 || !strings.Contains(candidates[0].Skipped[0].Reason, "incomplete") {
 		t.Errorf("the refusal was not explained: %+v", candidates[0].Skipped)
 	}
 }
@@ -409,7 +491,7 @@ func TestAppAbsentKeepsInstalledAppsData(t *testing.T) {
 // A helper bundle keeps its parent alive, so com.example.app.helper must not
 // read as abandoned merely because no .app is named that.
 func TestAppPresentCountsHelpers(t *testing.T) {
-	env := Env{Installed: map[string]bool{"com.example.app": true, "com.example.app.helper": true}}
+	env := Env{Installed: map[string]bool{"com.example.app": true, "com.example.app.helper": true}, InstalledKnown: true}
 	if !env.AppPresent("com.example.app.helper") {
 		t.Error("a helper of an installed app read as absent")
 	}

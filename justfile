@@ -9,7 +9,7 @@ setup:
     @echo "ready. 'just' lists recipes, 'just verify' is what ci runs"
 
 # what ci runs, run this before opening a pull request
-verify: fmt
+verify: fmt i18n-check
     go vet ./...
     GOOS=darwin GOARCH=amd64 go vet ./...
     golangci-lint run
@@ -47,6 +47,10 @@ check-amd64:
 # run the test suite
 test:
     go test ./...
+
+# verify every shipped locale against en_GB
+i18n-check:
+    go test ./internal/i18n
 
 # run one test by name, e.g. just test-one TestSurfaceWalkAccountsEveryByte
 test-one name:

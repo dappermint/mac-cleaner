@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -54,17 +53,20 @@ func runUninstallCommand(ctx context.Context, home string, rootful bool, identit
 	for _, app := range selected {
 		fmt.Fprintf(out, "\n%s %s\n", app.Name, app.Version)
 		if cask := uninstall.BrewCask(ctx, app); cask != "" {
-			fmt.Fprintf(out, "  brew installed this as the cask %q, remove it with: brew uninstall --cask %s\n", cask, cask)
-			fmt.Fprintln(out, "  removing it here would leave brew still believing it is installed")
+			fmt.Fprintf(out, "  Homebrew cask %q owns this application\n", cask)
+			if err := uninstall.BrewUninstall(ctx, funnel, cask, out); err != nil {
+				return fmt.Errorf("uninstalling Homebrew cask %s: %w", cask, err)
+			}
+			caskOptions := options
+			caskOptions.LeftoversOnly = true
+			results = append(results, uninstall.Run(ctx, funnel, env, app, apps, caskOptions, out))
 			continue
 		}
 		results = append(results, uninstall.Run(ctx, funnel, env, app, apps, options, out))
 	}
 
 	if *jsonOutput {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(results)
+		return writeJSON(out, "uninstall-results", results)
 	}
 	return summarize(out, results, *dryRun)
 }
@@ -115,9 +117,7 @@ func confirmUninstall(ctx context.Context, env uninstall.Env, apps, selected []u
 
 func printApps(out io.Writer, apps []uninstall.App, jsonOutput bool) error {
 	if jsonOutput {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(apps)
+		return writeJSON(out, "applications", apps)
 	}
 	fmt.Fprintf(out, "%-32s %-38s %10s  %s\n", "name", "bundle", "size", "note")
 	for _, app := range apps {

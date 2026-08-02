@@ -46,6 +46,12 @@ func TestEveryTaskDeclaresWhatItChanges(t *testing.T) {
 	}
 }
 
+func TestParityOptimiseCount(t *testing.T) {
+	if count := len(All()); count != 13 {
+		t.Fatalf("optimise has %d tasks, update the pinned parity ledger", count)
+	}
+}
+
 // The declined list is part of the interface. A task dropped without a reason
 // is indistinguishable from one nobody thought of.
 func TestDeclinedTasksCarryReasons(t *testing.T) {
@@ -197,5 +203,56 @@ func TestAgentProgramOnlyAcceptsAbsolutePaths(t *testing.T) {
 	}
 	if _, ok := agentProgram(broken); ok {
 		t.Error("an unparseable plist yielded a program path")
+	}
+}
+
+func TestSpotlightRulesOnlyRemoveProvablyAbsentApps(t *testing.T) {
+	rules := []any{"System.Settings", "com.apple.system", "org.example.installed", "org.example.missing", "not-a-bundle"}
+	kept, removed, err := filterSpotlightRules(rules, map[string]bool{"org.example.installed": true})
+	if err != nil {
+		t.Fatalf("planning rules: %v", err)
+	}
+	if strings.Join(removed, ",") != "org.example.missing" {
+		t.Fatalf("removed = %v", removed)
+	}
+	joined := strings.Join(kept, ",")
+	for _, wanted := range []string{"System.Settings", "com.apple.system", "org.example.installed", "not-a-bundle"} {
+		if !strings.Contains(joined, wanted) {
+			t.Errorf("kept rules do not include %q: %v", wanted, kept)
+		}
+	}
+}
+
+func TestSpotlightRulesRefuseAnEmptyInstalledIndex(t *testing.T) {
+	if _, _, err := filterSpotlightRules([]any{"org.example.missing"}, nil); err == nil || !strings.Contains(err.Error(), "index is empty") {
+		t.Fatalf("error = %v, want empty index refusal", err)
+	}
+}
+
+func TestSharedFileListsExcludeRecentDocuments(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "Library", "Application Support", "com.apple.sharedfilelist")
+	recent := filepath.Join(root, "com.apple.LSSharedFileList.ApplicationRecentDocuments")
+	if err := os.MkdirAll(recent, 0700); err != nil {
+		t.Fatalf("creating shared file lists: %v", err)
+	}
+	good := filepath.Join(root, "good.sfl3")
+	bad := filepath.Join(root, "bad.sfl2")
+	recentBad := filepath.Join(recent, "history.sfl3")
+	if err := os.WriteFile(good, []byte(`<?xml version="1.0"?><plist version="1.0"><dict/></plist>`), 0600); err != nil {
+		t.Fatalf("writing good list: %v", err)
+	}
+	for _, path := range []string{bad, recentBad} {
+		if err := os.WriteFile(path, []byte("not a plist"), 0600); err != nil {
+			t.Fatalf("writing broken list: %v", err)
+		}
+	}
+
+	broken, err := brokenSharedFileLists(home)
+	if err != nil {
+		t.Fatalf("finding broken lists: %v", err)
+	}
+	if len(broken) != 1 || broken[0] != bad {
+		t.Fatalf("broken = %v, want only %s", broken, bad)
 	}
 }

@@ -9,32 +9,59 @@ import (
 )
 
 const (
-	mib = int64(1024 * 1024)
-	gib = 1024 * mib
+	mib           = int64(1024 * 1024)
+	gib           = 1024 * mib
+	observedMacOS = "27.0"
+	macOSProduct  = "macOS"
 )
-
-// unmeasured marks a target whose reclaimed bytes have not been recorded on a
-// real machine yet. It is not a placeholder to leave in place: the catalog rule
-// is that a target ships with a measured value, and TestMeasuredValues reports
-// how much of the catalog still owes one.
-const unmeasured = "unmeasured"
 
 // All returns the catalog in display order. Two rules apply to every entry:
 // Evidence has to say what proves the path is what we claim, and anything above
 // RiskSafe has to name the sibling paths it deliberately leaves alone.
 var All = sync.OnceValue(func() []Target {
-	targets := make([]Target, 0, 32)
+	targets := make([]Target, 0, 99)
 	targets = append(targets, userEssentials()...)
+	targets = append(targets, parityUserTargets()...)
 	targets = append(targets, appCaches()...)
 	targets = append(targets, browsers()...)
+	targets = append(targets, browserVersionTargets()...)
 	targets = append(targets, cloudAndOffice()...)
+	targets = append(targets, officeTargets()...)
 	targets = append(targets, developerTools()...)
+	targets = append(targets, additionalDeveloperTools()...)
+	targets = append(targets, xcodeDocumentationTarget())
+	targets = append(targets, obsoleteEditorExtensions())
+	targets = append(targets, agentVersionTargets()...)
+	targets = append(targets, appsAndUtilities()...)
 	targets = append(targets, virtualization()...)
+	targets = append(targets, virtualizationCacheTargets()...)
 	targets = append(targets, deviceBackups()...)
 	targets = append(targets, leftovers()...)
 	targets = append(targets, system()...)
+	qualify(targets)
 	return targets
 })
+
+func qualify(targets []Target) {
+	observedAt := time.Date(2026, time.August, 2, 18, 37, 11, 0, time.UTC)
+	observations := map[string]Observation{
+		"javascript-caches":    {Product: "Bun", Version: "1.3.13", MacOS: observedMacOS, Bytes: 734470144, ObservedAt: observedAt},
+		"python-caches":        {Product: "pip", Version: "26.1.2", MacOS: observedMacOS, Bytes: 47742976, ObservedAt: observedAt},
+		"user-caches":          {Product: macOSProduct, Version: observedMacOS, MacOS: observedMacOS, Bytes: 2195988480, ObservedAt: observedAt},
+		"user-logs":            {Product: macOSProduct, Version: observedMacOS, MacOS: observedMacOS, Bytes: 139718656, ObservedAt: observedAt},
+		"orphaned-caches":      {Product: macOSProduct, Version: observedMacOS, MacOS: observedMacOS, Bytes: 220053504, ObservedAt: observedAt},
+		"orphaned-app-support": {Product: macOSProduct, Version: observedMacOS, MacOS: observedMacOS, Bytes: 149553152, ObservedAt: observedAt},
+	}
+	for index := range targets {
+		observation, ok := observations[targets[index].ID]
+		if !ok {
+			targets[index].Qualification = EvidencePending
+			continue
+		}
+		targets[index].Qualification = EvidenceObserved
+		targets[index].Observations = []Observation{observation}
+	}
+}
 
 // leftovers are the directories an uninstalled app left behind. Every target
 // here is guarded by AppAbsent, which refuses outright when the installed index
@@ -61,7 +88,6 @@ func leftovers() []Target {
 			Split:         true,
 			SplitMinBytes: 64 * mib,
 			Evidence:      "the directory is named for a bundle id or app that is no longer installed anywhere this tool looks",
-			Measured:      unmeasured,
 			NotTargets:    shared,
 		}
 	}
@@ -97,7 +123,6 @@ func system() []Target {
 			Split:         true,
 			SplitMinBytes: 128 * mib,
 			Evidence:      "the machine-wide equivalent of the per-user cache directory, reserved for rebuildable data",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"/Library/Caches/com.apple.* entries, which the fast protection table blankets",
 				"/System/Library/Caches, which is on the sealed volume",
@@ -119,7 +144,6 @@ func system() []Target {
 			Guards:   []Guard{NeedsRoot(), OlderThan(14 * 24 * time.Hour)},
 			MinBytes: 8 * mib,
 			Evidence: "a numeric, .gz or .old suffix is what newsyslog appends when it rotates a log it has finished with",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"the live log each rotated file came from, which has no suffix",
 				"/private/var/db/diagnostics, which is the unified log store",
@@ -139,7 +163,6 @@ func system() []Target {
 			Split:         true,
 			SplitMinBytes: 64 * mib,
 			Evidence:      "each entry is one dated report and nothing reads them but a human diagnosing a fault",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"anything under 90 days old, because a recent crash report is the evidence for a fault still being investigated",
 				"the per-user DiagnosticReports directory, which the user-logs target already excludes by name",
@@ -153,11 +176,10 @@ func system() []Target {
 			Risk:     RiskSafe,
 			Recovery: safety.RecoveryTrash,
 			Detail:   "the machine-wide icon cache, rebuilt on demand",
-			Paths:    []PathSpec{Home("/Library/Caches/com.apple.iconservices.store")},
+			Paths:    []PathSpec{Absolute("/Library/Caches/com.apple.iconservices.store")},
 			Guards:   []Guard{NeedsRoot()},
 			MinBytes: 8 * mib,
 			Evidence: "an Apple-owned cache whose whole contents are regenerated from application bundles",
-			Measured: unmeasured,
 		},
 	}
 }
@@ -180,7 +202,6 @@ func virtualization() []Target {
 			Split:         true,
 			SplitMinBytes: 512 * mib,
 			Evidence:      "image layers and logs a container runtime repopulates from its registry",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"the virtual machine disk images themselves, which hold anything written inside the machine",
 				"docker's own storage, which the docker system prune action owns",
@@ -198,7 +219,6 @@ func virtualization() []Target {
 			Guards:   []Guard{ProcessNotRunning("Simulator", "Xcode", "simdiskimaged"), OwnedByUser()},
 			MinBytes: 512 * mib,
 			Evidence: "each entry is a mounted runtime image Xcode re-downloads on demand",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"CoreSimulator/Devices, which holds the simulators' installed apps and data",
 				"any runtime currently in use, which is why the Simulator process guard is there",
@@ -234,7 +254,6 @@ func userEssentials() []Target {
 			Split:         true,
 			SplitMinBytes: 128 * mib,
 			Evidence:      "each entry is a direct child of a cache directory whose whole purpose is rebuildable data",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"anything matching the data-protected table, which is where password managers and IM clients keep live state",
 				"com.apple.* entries, which the fast protection table blankets",
@@ -260,7 +279,6 @@ func userEssentials() []Target {
 			Split:         true,
 			SplitMinBytes: 32 * mib,
 			Evidence:      "each entry is a direct child of the per-user log directory",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"DiagnosticReports, which is the crash history a support case needs",
 				"this tool's own operation log",
@@ -278,7 +296,6 @@ func userEssentials() []Target {
 			Guards:   []Guard{OwnedByUser()},
 			MinBytes: 1 * mib,
 			Evidence: "a fixed Apple path holding only counter plists",
-			Measured: unmeasured,
 		},
 		{
 			ID:       "saved-application-state",
@@ -292,7 +309,6 @@ func userEssentials() []Target {
 			Guards:   []Guard{OlderThan(30 * 24 * time.Hour), NotDataProtected(), OwnedByUser()},
 			MinBytes: 1 * mib,
 			Evidence: "the .savedState suffix is the documented shape of this directory",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"state touched in the last 30 days, which belongs to an app the user still has open sessions in",
 			},
@@ -314,7 +330,6 @@ func userEssentials() []Target {
 			Guards:   []Guard{OlderThan(7 * 24 * time.Hour), OwnedByUser()},
 			MinBytes: 1 * mib,
 			Evidence: "the suffix is written by the downloader itself and removed on completion",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"anything modified in the last week, which may still be an active transfer",
 				"completed downloads, which are user documents",
@@ -336,10 +351,10 @@ func appCaches() []Target {
 			Paths:         []PathSpec{Glob("Library/Containers/*/Data/Library/Caches")},
 			Guards:        []Guard{ContainerNotDataProtected(), OwnedByUser()},
 			MinBytes:      16 * mib,
+			Sweep:         true,
 			Split:         true,
 			SplitMinBytes: 128 * mib,
 			Evidence:      "the sandbox layout puts rebuildable data at exactly this path inside every container",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"Data/Library/Application Support and Data/Documents, which are the app's real state",
 			},
@@ -355,10 +370,10 @@ func appCaches() []Target {
 			Paths:         []PathSpec{Glob("Library/Group Containers/*/Library/Caches")},
 			Guards:        []Guard{ContainerNotDataProtected(), OwnedByUser()},
 			MinBytes:      16 * mib,
+			Sweep:         true,
 			Split:         true,
 			SplitMinBytes: 128 * mib,
 			Evidence:      "the group container layout mirrors the sandbox layout",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"the group container root, which is where shared app databases live",
 			},
@@ -373,6 +388,29 @@ func browsers() []Target {
 		chromiumBrowser("brave", "Brave Browser", "Library/Caches/BraveSoftware/Brave-Browser", "Library/Application Support/BraveSoftware/Brave-Browser"),
 		chromiumBrowser("vivaldi", "Vivaldi", "Library/Caches/Vivaldi", "Library/Application Support/Vivaldi"),
 		chromiumBrowser("arc", "Arc", "Library/Caches/company.thebrowser.Browser", "Library/Application Support/Arc/User Data"),
+		chromiumBrowser("chromium", "Chromium", "Library/Caches/Chromium", "Library/Application Support/Chromium"),
+		chromiumBrowser("opera", "Opera", "Library/Caches/com.operasoftware.Opera", "Library/Application Support/com.operasoftware.Opera"),
+		chromiumBrowser("sidekick", "Sidekick", "Library/Caches/Sidekick", "Library/Application Support/Sidekick"),
+		chromiumBrowser("comet", "Comet", "Library/Caches/Comet", "Library/Application Support/Comet"),
+		chromiumBrowser("dia", "Dia", "Library/Caches/Dia", "Library/Application Support/Dia"),
+		{
+			ID: "orion-cache", Name: "Orion cache", Group: GroupBrowsers,
+			Category: storage.CategorySystemData, Risk: RiskSafe, Recovery: safety.RecoveryTrash,
+			Detail: "browser network and WebKit caches, rebuilt on next browse",
+			Paths:  []PathSpec{Home("Library/Caches/com.kagi.kagimacOS")},
+			Guards: []Guard{ProcessNotRunning("Orion"), OwnedByUser()}, MinBytes: 8 * mib,
+			Evidence:   "Orion's bundle-id-named directory under the per-user Caches root",
+			NotTargets: []string{"Orion profiles, cookies, history, bookmarks, passwords, extensions, and WebKit website data"},
+		},
+		{
+			ID: "zen-cache", Name: "Zen cache", Group: GroupBrowsers,
+			Category: storage.CategorySystemData, Risk: RiskSafe, Recovery: safety.RecoveryTrash,
+			Detail: "Firefox-derived network and startup caches, rebuilt on next browse",
+			Paths:  []PathSpec{Glob("Library/Application Support/zen/Profiles/*/cache2"), Glob("Library/Application Support/zen/Profiles/*/startupCache"), Home("Library/Caches/zen")},
+			Guards: []Guard{ProcessNotRunning("zen"), OwnedByUser()}, MinBytes: 8 * mib,
+			Evidence:   "cache2 and startupCache are Firefox-family rebuildable stores outside login, history, cookie, and extension databases",
+			NotTargets: []string{"the Zen profile root, logins, cookies, history, bookmarks, extensions, and preferences"},
+		},
 		{
 			ID:       "firefox-cache",
 			Name:     "Firefox cache",
@@ -388,7 +426,6 @@ func browsers() []Target {
 			Guards:   []Guard{ProcessNotRunning("firefox"), OwnedByUser()},
 			MinBytes: 8 * mib,
 			Evidence: "cache2 and startupCache are Firefox's own names for its rebuildable stores, and they sit outside the profile directory that holds the user's data",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"Application Support/Firefox/Profiles, which holds cookies, logins, history and extensions",
 			},
@@ -418,7 +455,6 @@ func chromiumBrowser(id, process, cacheRoot, profileRoot string) Target {
 		Guards:   []Guard{ProcessNotRunning(process), OwnedByUser()},
 		MinBytes: 8 * mib,
 		Evidence: "these four directory names are Chromium's own rebuildable caches and are recreated on the next page load",
-		Measured: unmeasured,
 		NotTargets: []string{
 			"Login Data, Cookies, Local Storage, History, Bookmarks and Extensions, which are the profile itself",
 			"Service Worker/Database, which holds registrations rather than cached responses",
@@ -440,7 +476,6 @@ func cloudAndOffice() []Target {
 			Guards:   []Guard{ProcessNotRunning("Dropbox"), OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "a bundle-id-named cache directory belonging to a client that can refetch from the server",
-			Measured: unmeasured,
 		},
 		{
 			ID:       "onedrive-cache",
@@ -454,7 +489,6 @@ func cloudAndOffice() []Target {
 			Guards:   []Guard{ProcessNotRunning("OneDrive"), OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "a bundle-id-named cache directory belonging to a client that can refetch from the server",
-			Measured: unmeasured,
 		},
 		{
 			ID:       "google-drive-cache",
@@ -468,7 +502,6 @@ func cloudAndOffice() []Target {
 			Guards:   []Guard{ProcessNotRunning("Google Drive"), OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "a bundle-id-named cache directory belonging to a client that can refetch from the server",
-			Measured: unmeasured,
 		},
 	}
 }
@@ -487,7 +520,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("Xcode", "xcodebuild"), OwnedByUser()},
 			MinBytes: 64 * mib,
 			Evidence: "Xcode's own documented location for regenerable build output",
-			Measured: unmeasured,
 		},
 		{
 			ID:       "xcode-device-support",
@@ -507,7 +539,6 @@ func developerTools() []Target {
 			Split:         true,
 			SplitMinBytes: 256 * mib,
 			Evidence:      "each entry is named for the OS build it was copied from and is regenerated on the next device attach",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"the DeviceSupport root itself, so a partially removed set still has a home",
 				"Archives, which are shipping artifacts rather than build intermediates",
@@ -527,7 +558,6 @@ func developerTools() []Target {
 			Split:         true,
 			SplitMinBytes: 256 * mib,
 			Evidence:      "a dated directory under Xcode's archive root",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"anything under six months old, because an archive is how a crash report gets symbolicated",
 			},
@@ -547,7 +577,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("Simulator", "simdiskimaged"), OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "CoreSimulator's own cache and log roots, separate from Devices which holds simulator state",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"CoreSimulator/Devices, which is the simulator's installed apps and data",
 			},
@@ -569,7 +598,6 @@ func developerTools() []Target {
 			Split:         true,
 			SplitMinBytes: 128 * mib,
 			Evidence:      "JetBrains splits caches and logs out of Application Support, which is where its settings and credentials live",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"Application Support/JetBrains, which holds licences, settings and keymaps",
 			},
@@ -590,7 +618,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("java", "gradle"), OwnedByUser()},
 			MinBytes: 8 * mib,
 			Evidence: "Gradle recreates these three directories on the next invocation",
-			Measured: unmeasured,
 			NotTargets: []string{
 				".gradle/caches, which holds resolved dependencies that would have to be redownloaded",
 			},
@@ -607,7 +634,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("java", "mvn"), OwnedByUser()},
 			MinBytes: 256 * mib,
 			Evidence: "Maven's default local repository, which it repopulates from the configured remotes",
-			Measured: unmeasured,
 			NotTargets: []string{
 				".m2/settings.xml, which holds repository credentials",
 				"anything installed locally with mvn install and not published anywhere, which this cannot distinguish and is why the tier is review",
@@ -629,7 +655,6 @@ func developerTools() []Target {
 			Guards:   []Guard{OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "each is the documented cache location of its tool, refetched from the index on demand",
-			Measured: unmeasured,
 		},
 		{
 			ID:       "javascript-caches",
@@ -650,7 +675,6 @@ func developerTools() []Target {
 			Guards:   []Guard{OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "each is the documented cache location of its tool and is refetched on demand",
-			Measured: unmeasured,
 			NotTargets: []string{
 				"the npm cache, which the npm cache verify action already owns, so counting it here would double count it",
 			},
@@ -670,7 +694,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("cargo", "rustc"), OwnedByUser()},
 			MinBytes: 32 * mib,
 			Evidence: "cargo repopulates both from the registry, and neither holds a local-only crate",
-			Measured: unmeasured,
 			NotTargets: []string{
 				".cargo/registry/index, which is the registry metadata cargo needs to resolve offline",
 				".cargo/bin, which holds installed binaries",
@@ -688,7 +711,6 @@ func developerTools() []Target {
 			Guards:   []Guard{ProcessNotRunning("Xcode", "swift"), OwnedByUser()},
 			MinBytes: 16 * mib,
 			Evidence: "SwiftPM's own shared cache, which it repopulates from the package URLs in the manifest",
-			Measured: unmeasured,
 		},
 	}
 }
@@ -709,7 +731,6 @@ func deviceBackups() []Target {
 			Split:         true,
 			SplitMinBytes: 1 * gib,
 			Evidence:      "each entry is one device backup, named for its device identifier",
-			Measured:      unmeasured,
 			NotTargets: []string{
 				"anything under 90 days old, because a recent backup is usually the restore point for a device still in use",
 				"the Backup root itself",
@@ -733,7 +754,6 @@ func deviceBackups() []Target {
 			Split:         true,
 			SplitMinBytes: 256 * mib,
 			Evidence:      "an IPSW is a download Apple serves again on demand",
-			Measured:      unmeasured,
 		},
 	}
 }

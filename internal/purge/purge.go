@@ -6,13 +6,16 @@ package purge
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dappermint/ratatouille/internal/config"
@@ -66,12 +69,15 @@ var DefaultRoots = []string{
 }
 
 type Artifact struct {
-	Path     string    `json:"path"`
-	Project  string    `json:"project"`
-	Kind     string    `json:"kind"`
-	Bytes    int64     `json:"bytes"`
-	Modified time.Time `json:"modified"`
-	Recent   bool      `json:"recent"`
+	Path             string    `json:"path"`
+	Project          string    `json:"project"`
+	Kind             string    `json:"kind"`
+	Bytes            int64     `json:"bytes"`
+	Modified         time.Time `json:"modified"`
+	Recent           bool      `json:"recent"`
+	Device           uint64    `json:"-"`
+	Inode            uint64    `json:"-"`
+	ArtifactModified time.Time `json:"-"`
 }
 
 // Selected reports whether this artifact is chosen by default. A project
@@ -187,6 +193,13 @@ func size(ctx context.Context, artifacts []Artifact, minAge time.Duration) {
 					artifacts[index].Modified = info.ModTime()
 					artifacts[index].Recent = now.Sub(info.ModTime()) < minAge
 				}
+				if info, err := os.Lstat(artifacts[index].Path); err == nil {
+					artifacts[index].ArtifactModified = info.ModTime()
+					if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+						artifacts[index].Device = storage.DeviceID(stat)
+						artifacts[index].Inode = stat.Ino
+					}
+				}
 			}
 		}()
 	}
@@ -207,6 +220,10 @@ func Remove(ctx context.Context, funnel *safety.Funnel, artifacts []Artifact, to
 	var reclaimed int64
 	var failures []error
 	for _, artifact := range artifacts {
+		if !Unchanged(artifact) {
+			failures = append(failures, fmt.Errorf("%s changed after preview", artifact.Path))
+			continue
+		}
 		request := safety.Request{
 			Command: CommandName,
 			Item:    artifact.Kind,
@@ -227,6 +244,22 @@ func Remove(ctx context.Context, funnel *safety.Funnel, artifacts []Artifact, to
 		reclaimed += artifact.Bytes
 	}
 	return removed, reclaimed, failures
+}
+
+func Unchanged(artifact Artifact) bool {
+	if filepath.Base(artifact.Path) != artifact.Kind || filepath.Clean(filepath.Dir(artifact.Path)) != filepath.Clean(artifact.Project) || !slices.Contains(Targets, artifact.Kind) {
+		return false
+	}
+	info, err := os.Lstat(artifact.Path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.ModTime() != artifact.ArtifactModified {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || storage.DeviceID(stat) != artifact.Device || stat.Ino != artifact.Inode {
+		return false
+	}
+	projectInfo, err := os.Lstat(artifact.Project)
+	return err == nil && projectInfo.IsDir() && projectInfo.Mode()&os.ModeSymlink == 0 && projectInfo.ModTime().Equal(artifact.Modified)
 }
 
 func Total(artifacts []Artifact) int64 {

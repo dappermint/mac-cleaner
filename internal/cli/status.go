@@ -32,11 +32,12 @@ func runStatusCommand(ctx context.Context, terminalOut bool, args []string, out,
 	if !terminalOut {
 		*jsonOutput = true
 	}
+	tracker := metrics.NewTracker()
 
 	if !*watch {
-		snapshot := metrics.Collect(ctx)
+		snapshot := tracker.Observe(metrics.Collect(ctx))
 		if *jsonOutput {
-			return writeJSON(out, snapshot)
+			return writeJSON(out, "status", snapshot)
 		}
 		printStatus(out, snapshot, *explain)
 		return nil
@@ -48,10 +49,10 @@ func runStatusCommand(ctx context.Context, terminalOut bool, args []string, out,
 	// that scrolls is one you cannot read.
 	encoder := json.NewEncoder(out)
 	for {
-		snapshot := metrics.Collect(ctx)
+		snapshot := tracker.Observe(metrics.Collect(ctx))
 		switch {
 		case *jsonOutput:
-			if err := encoder.Encode(snapshot); err != nil {
+			if err := encoder.Encode(newJSONEnvelope("status", snapshot)); err != nil {
 				return err
 			}
 		default:
@@ -75,10 +76,22 @@ const (
 	showCursor  = "\033[?25h"
 )
 
-func writeJSON(out io.Writer, value any) error {
+const jsonSchema = 2
+
+type jsonEnvelope struct {
+	Schema int    `json:"schema"`
+	Kind   string `json:"kind"`
+	Data   any    `json:"data"`
+}
+
+func newJSONEnvelope(kind string, value any) jsonEnvelope {
+	return jsonEnvelope{Schema: jsonSchema, Kind: kind, Data: value}
+}
+
+func writeJSON(out io.Writer, kind string, value any) error {
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
+	return encoder.Encode(newJSONEnvelope(kind, value))
 }
 
 func printStatus(out io.Writer, snapshot metrics.Snapshot, explain bool) {
@@ -92,6 +105,17 @@ func printStatus(out io.Writer, snapshot metrics.Snapshot, explain bool) {
 		"cpu", meter(snapshot.CPU.Busy), snapshot.CPU.Busy, snapshot.CPU.User, snapshot.CPU.System)
 	fmt.Fprintf(out, "%-9s load %.2f / %.2f / %.2f over %d cores\n",
 		"", snapshot.CPU.Load[0], snapshot.CPU.Load[1], snapshot.CPU.Load[2], snapshot.CPU.Cores)
+	if len(snapshot.CPU.PerCore) > 0 {
+		parts := make([]string, 0, len(snapshot.CPU.PerCore))
+		for _, core := range snapshot.CPU.PerCore {
+			parts = append(parts, fmt.Sprintf("%d:%.0f%%", core.ID, core.Busy))
+		}
+		fmt.Fprintf(out, "%-9s cores %s\n", "", strings.Join(parts, " "))
+	}
+	if snapshot.GPU != nil {
+		fmt.Fprintf(out, "%-9s %s  %5.1f%% device   %.1f renderer  %.1f tiler\n",
+			"gpu", meter(snapshot.GPU.Device), snapshot.GPU.Device, snapshot.GPU.Renderer, snapshot.GPU.Tiler)
+	}
 
 	memory := snapshot.Memory
 	fmt.Fprintf(out, "%-9s %s  %5.1f%% used   %s of %s\n",
@@ -132,6 +156,29 @@ func printStatus(out io.Writer, snapshot metrics.Snapshot, explain bool) {
 			line += "  " + power.Remaining + " remaining"
 		}
 		fmt.Fprintf(out, "%-9s %s  %s\n", "power", meter(float64(power.Percent)), line)
+		if power.Cycles > 0 {
+			fmt.Fprintf(out, "%-9s %d cycles  %.1f%% capacity health\n", "", power.Cycles, power.CapacityHealth)
+		}
+	}
+
+	if thermal := snapshot.Thermal; thermal != nil {
+		fmt.Fprintf(out, "%-9s pressure %d  cpu limit %d%%  scheduler %d%%", "thermal", thermal.Pressure, thermal.CPUSpeedLimit, thermal.SchedulerLimit)
+		if len(thermal.FanRPM) > 0 {
+			fmt.Fprintf(out, "  fans %v rpm", thermal.FanRPM)
+		}
+		fmt.Fprintln(out)
+	}
+
+	for _, device := range snapshot.Devices {
+		fmt.Fprintf(out, "%-9s %-9s %-12s %s\n", "storage", device.Device, device.Status, device.Media)
+	}
+	for _, device := range snapshot.Bluetooth {
+		fmt.Fprintf(out, "%-9s %3d%%  %s\n", "bluetooth", device.Percent, device.Name)
+	}
+	for _, proxy := range []struct{ name, endpoint string }{{"http", snapshot.Proxy.HTTP}, {"https", snapshot.Proxy.HTTPS}, {"socks", snapshot.Proxy.SOCKS}} {
+		if proxy.endpoint != "" {
+			fmt.Fprintf(out, "%-9s %-5s %s\n", "proxy", proxy.name, proxy.endpoint)
+		}
 	}
 
 	if len(snapshot.Processes) > 0 {
@@ -140,6 +187,9 @@ func printStatus(out io.Writer, snapshot metrics.Snapshot, explain bool) {
 			fmt.Fprintf(out, "%-9s %-24s %7.1f%% %7.1f%%\n", "",
 				text.Truncate(process.Name, 24), process.CPU, process.Memory)
 		}
+	}
+	for _, alert := range snapshot.Alerts {
+		fmt.Fprintf(out, "\n%-9s %s\n", "alert", alert.Message)
 	}
 
 	if explain {

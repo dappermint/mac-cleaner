@@ -1,11 +1,11 @@
 package scan
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/dappermint/ratatouille/internal/exitcode"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -22,7 +22,7 @@ type Options struct {
 
 func (o Options) Validate() error {
 	if o.Verify && os.Geteuid() != 0 {
-		return errors.New("--verify requires uid 0: sudo ratatouille surface --root --verify")
+		return exitcode.Errorf(exitcode.NeedsRoot, "--verify requires uid 0: sudo ratatouille surface --root --verify")
 	}
 	return nil
 }

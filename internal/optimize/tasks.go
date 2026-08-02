@@ -33,6 +33,8 @@ var All = sync.OnceValue(func() []Task {
 		legacyOverrides(),
 		networkStackRefresh(),
 		periodicMaintenance(),
+		spotlightPreferenceRules(),
+		sharedFileLists(),
 	}
 })
 
@@ -50,6 +52,7 @@ func DeclinedTasks() []Declined {
 		{"spotlight-reindex", "a rebuild costs hours of battery and CPU, and slow search is rarely the index's fault"},
 		{"permission-repair", "resetting home directory permissions breaks any deliberate setup, and there is no way to tell one from the other"},
 		{"notification-cleanup", "the notification store is a live database with no documented offline format"},
+		{"coreduet-database", "CoreDuet is live system state with no safe ownership boundary or documented repair procedure"},
 		{"saved-state-cleanup", "already covered by the saved-application-state cleanup target, where it belongs"},
 	}
 }

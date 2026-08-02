@@ -173,8 +173,12 @@ func (state *tuiState) runCommand(command string) (bool, bool) {
 		state.view = viewSurface
 	case "actions", "2":
 		state.view = viewActions
-	case "health", "3":
+	case "apps", "3":
+		state.view = viewApps
+	case "health", "4":
 		state.view = viewHealth
+	case "status", "5":
+		state.view = viewStatus
 	case "clear":
 		state.clearMarks()
 		state.notice = "marks cleared"

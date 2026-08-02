@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,8 +14,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dappermint/ratatouille/internal/config"
+	"github.com/dappermint/ratatouille/internal/diagnostic"
+	"github.com/dappermint/ratatouille/internal/exitcode"
+	"github.com/dappermint/ratatouille/internal/external"
+	"github.com/dappermint/ratatouille/internal/i18n"
 	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
@@ -25,9 +29,23 @@ import (
 	"github.com/dappermint/ratatouille/internal/tui"
 )
 
-func Run(ctx context.Context, version string, args []string, in io.Reader, out, errOut io.Writer) error {
+func Run(ctx context.Context, version string, args []string, in io.Reader, out, errOut io.Writer) (runErr error) {
+	localizer := i18n.EnglishGB()
 	if runtime.GOOS != "darwin" {
-		return errors.New("this tool only supports macOS")
+		return errors.New(localizer.T("cli.macos_only"))
+	}
+	debug, args := extractDebugFlag(args)
+	if debug {
+		ctx = diagnostic.WithContext(ctx, errOut)
+		started := time.Now()
+		command := "tui"
+		if len(args) > 0 {
+			command = args[0]
+		}
+		diagnostic.Printf(ctx, "command=%s event=start", command)
+		defer func() {
+			diagnostic.Printf(ctx, "command=%s event=finish duration=%s error=%v", command, time.Since(started).Round(time.Millisecond), runErr != nil)
+		}()
 	}
 	rootful, args := extractRootFlag(args)
 	if err := validateRootMode(rootful, os.Geteuid()); err != nil {
@@ -40,12 +58,19 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 	log := safety.OpenLog(home, identity)
 	settings, settingsErr := config.LoadSettings(home)
 	if settingsErr != nil {
-		fmt.Fprintf(errOut, "config: %v\n", settingsErr)
+		fmt.Fprint(errOut, localizer.T("cli.config_error", settingsErr))
 	}
+	preferences := config.PreferencesFrom(settings)
+	if selected, available := i18n.Load(preferences.Locale); available {
+		localizer = selected
+	} else {
+		fmt.Fprint(errOut, localizer.T("cli.locale_fallback", preferences.Locale))
+	}
+	ctx = i18n.WithContext(ctx, localizer)
 
 	if len(args) == 0 {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
-			printUsage(out)
+			printUsage(out, localizer)
 			return nil
 		}
 		keys, keyErr := keymap.Load(settings)
@@ -79,7 +104,8 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 	case "touchid":
 		return runTouchIDCommand(args[1:], out)
 	case "update":
-		return runUpdateCommand(out, os.Args[0])
+		runUpdateCommand(out, os.Args[0])
+		return nil
 	case "status":
 		return runStatusCommand(ctx, isTerminal(os.Stdout), args[1:], out, errOut)
 	case "history":
@@ -88,10 +114,10 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 		fmt.Fprintln(out, version)
 		return nil
 	case "help", "--help", "-h":
-		printUsage(out)
+		printUsage(out, localizer)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q, try ratatouille help", args[0])
+		return errors.New(localizer.T("cli.unknown_command", args[0]))
 	}
 }
 
@@ -114,9 +140,7 @@ func runScanCommand(ctx context.Context, home string, rootful bool, identity *st
 	}
 	report := scan.Configure(home, options, identity).Scan(ctx)
 	if *jsonOutput {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report)
+		return writeJSON(out, "scan", report)
 	}
 	printReport(out, report)
 	return nil
@@ -168,12 +192,10 @@ func runSurfaceCommand(ctx context.Context, home string, rootful bool, identity 
 
 	report := scan.Configure(home, options, identity).Scan(ctx)
 	if *jsonOutput {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report.Surface)
+		return writeJSON(out, "surface", report.Surface)
 	}
 	if *files {
-		printLargeFiles(out, home, report, *limit)
+		printLargeFiles(ctx, out, home, report, *limit)
 		return nil
 	}
 	printSurface(out, report, *depth)
@@ -224,10 +246,10 @@ func surfaceRoot(argument string) (string, error) {
 	return resolved, nil
 }
 
-func printLargeFiles(out io.Writer, home string, report scan.Report, limit int) {
+func printLargeFiles(ctx context.Context, out io.Writer, home string, report scan.Report, limit int) {
 	surface := report.Surface
 	if surface == nil || len(surface.LargeFiles) == 0 {
-		fmt.Fprintln(out, "no files above the size floor")
+		fmt.Fprintln(out, i18n.FromContext(ctx).T("surface.no_large_files"))
 		return
 	}
 	shown := surface.LargeFiles
@@ -268,10 +290,17 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *s
 	deep := flags.Bool("deep", false, "scan project build state")
 	allSafe := flags.Bool("all-safe", false, "select every safe action")
 	dryRun := flags.Bool("dry-run", false, "show actions without changing anything")
+	externalPath := flags.String("external", "", "clean metadata from a directly mounted external volume")
 	yes := flags.Bool("yes", false, "skip the normal confirmation")
 	confirm := flags.String("confirm", "", "required phrase for irreversible automation")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *externalPath != "" {
+		if *deep || *allSafe || len(flags.Args()) != 0 {
+			return errors.New("--external cannot be combined with target ids, --deep, or --all-safe")
+		}
+		return runExternalClean(ctx, home, identity, log, *externalPath, *dryRun, *yes, in, out)
 	}
 	report := scan.Configure(home, scan.Options{Deep: *deep, Rootful: rootful}, identity).Scan(ctx)
 	items, err := resolveItems(report, flags.Args(), *allSafe)
@@ -304,6 +333,43 @@ func runCleanCommand(ctx context.Context, home string, rootful bool, identity *s
 	return scan.ActionErrors(results)
 }
 
+func runExternalClean(ctx context.Context, home string, identity *storage.CommandIdentity, log *safety.Log, path string, dryRun, yes bool, in io.Reader, out io.Writer) error {
+	scanCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	plan, err := external.Find(scanCtx, path, external.Options{})
+	cancel()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "external volume %s\n", plan.Mount.Path)
+	if len(plan.Items) == 0 {
+		fmt.Fprintln(out, "  no removable metadata found")
+		return nil
+	}
+	for _, item := range plan.Items {
+		fmt.Fprintf(out, "  %10s  %-16s %s\n", storage.HumanBytes(item.Bytes), item.Kind, item.Path)
+	}
+	fmt.Fprintf(out, "\n%d items, %s, removed permanently\n", len(plan.Items), storage.HumanBytes(plan.Bytes()))
+	if !dryRun && !yes {
+		fmt.Fprint(out, "type \"external\" to continue: ")
+		answer, readErr := bufio.NewReader(in).ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		if strings.TrimSpace(answer) != "external" {
+			return errors.New("confirmation did not match, no changes made")
+		}
+	}
+	results, err := external.Remove(ctx, safety.NewFunnel(home, identity, dryRun, log), plan, external.Options{})
+	for _, result := range results {
+		verb := "removed"
+		if result.DryRun {
+			verb = "would remove"
+		}
+		fmt.Fprintf(out, "  %s  %s\n", verb, result.Path)
+	}
+	return err
+}
+
 func extractRootFlag(args []string) (bool, []string) {
 	rootful := false
 	filtered := make([]string, 0, len(args))
@@ -317,9 +383,22 @@ func extractRootFlag(args []string) (bool, []string) {
 	return rootful, filtered
 }
 
+func extractDebugFlag(args []string) (bool, []string) {
+	debug := false
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--debug" {
+			debug = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	return debug, filtered
+}
+
 func validateRootMode(rootful bool, effectiveUID int) error {
 	if rootful && effectiveUID != 0 {
-		return errors.New("--root requires uid 0: sudo ratatouille --root")
+		return exitcode.Errorf(exitcode.NeedsRoot, "--root requires uid 0: sudo ratatouille --root")
 	}
 	return nil
 }
@@ -629,34 +708,8 @@ func sumBytes(items []scan.Item) int64 {
 	return total
 }
 
-func printUsage(out io.Writer) {
-	fmt.Fprint(out, `ratatouille
-
-usage:
-  ratatouille [--root]
-  ratatouille scan [--root] [--deep] [--surface] [--verify] [--json]
-  ratatouille surface [path] [--root] [--verify] [--depth n] [--json]
-  ratatouille surface [path] --files [--min-size 100MiB] [--limit n]
-  ratatouille plan [--root] [--deep] [--all-safe] <item-id>...
-  ratatouille clean [--root] [--deep] [--all-safe] [--dry-run] <item-id>...
-  ratatouille uninstall [--list] [--dry-run] [--permanent] [--json] <app>...
-  ratatouille purge [--all] [--trash] [--dry-run] [--json]
-  ratatouille installer [--min-size 16MiB] [--dry-run] [--json]
-  ratatouille optimize [--list] [--dry-run] [--only ids] [--skip ids] [--json]
-  ratatouille status [--watch] [--interval 2s] [--explain] [--json]
-  ratatouille config <show|path|keys|whitelist|optimize-whitelist|purge-paths>
-  ratatouille completion <fish|zsh|bash>
-  ratatouille touchid <status|enable|disable>
-  ratatouille update
-  ratatouille history [--since 7d] [--limit n] [--id run] [--json]
-
---root requires uid 0 and adds System Data, macOS and Other Users inventory
---surface accounts for every byte of the data volume, including what it cannot read
---verify runs a live filesystem check and requires uid 0
-
-every removal is recorded in ~/Library/Logs/ratatouille/operations.jsonl
-RATATOUILLE_NO_OPLOG=1 turns that off, RATATOUILLE_DRY_RUN=1 forces dry-run
-`)
+func printUsage(out io.Writer, localizer *i18n.Localizer) {
+	fmt.Fprint(out, localizer.T("cli.usage"))
 }
 
 func isTerminal(file *os.File) bool {

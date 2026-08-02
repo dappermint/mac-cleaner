@@ -122,6 +122,12 @@ func NewScanner(home string, deep bool) Scanner {
 }
 
 func (s Scanner) Scan(ctx context.Context) Report {
+	var previous *Report
+	if s.Surface {
+		if cached, err := LoadCachedReport(s.Home, s.Rootful); err == nil {
+			previous = &cached
+		}
+	}
 	report := Report{GeneratedAt: time.Now(), Home: s.Home, Rootful: s.Rootful}
 	collectors := s.collectors()
 	totalStages := len(collectors) + 1
@@ -272,6 +278,12 @@ func (s Scanner) Scan(ctx context.Context) Report {
 	}
 	report.Issues = storage.UniqueStrings(report.Issues)
 	report.Sort()
+	report.Insights = buildInsights(ctx, report, previous)
+	if s.Surface {
+		if err := saveCachedReport(report); err != nil {
+			report.Issues = append(report.Issues, "surface cache: "+err.Error())
+		}
+	}
 	return report
 }
 

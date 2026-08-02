@@ -21,18 +21,25 @@ const (
 )
 
 type Snapshot struct {
-	At        time.Time     `json:"at"`
-	Host      string        `json:"host"`
-	LoadScore int           `json:"load_score"`
-	Hardware  Hardware      `json:"hardware"`
-	CPU       CPU           `json:"cpu"`
-	Memory    Memory        `json:"memory"`
-	Disks     []Disk        `json:"disks"`
-	Network   Network       `json:"network"`
-	Power     *Power        `json:"power,omitempty"`
-	Processes []Process     `json:"processes,omitempty"`
-	Issues    []string      `json:"issues,omitempty"`
-	Elapsed   time.Duration `json:"elapsed_ns"`
+	At        time.Time               `json:"at"`
+	Host      string                  `json:"host"`
+	LoadScore int                     `json:"load_score"`
+	Hardware  Hardware                `json:"hardware"`
+	CPU       CPU                     `json:"cpu"`
+	Memory    Memory                  `json:"memory"`
+	Disks     []Disk                  `json:"disks"`
+	Network   Network                 `json:"network"`
+	Power     *Power                  `json:"power,omitempty"`
+	GPU       *GPU                    `json:"gpu,omitempty"`
+	Thermal   *Thermal                `json:"thermal,omitempty"`
+	Devices   []storage.StorageDevice `json:"storage_devices,omitempty"`
+	Proxy     Proxy                   `json:"proxy"`
+	Bluetooth []BluetoothDevice       `json:"bluetooth,omitempty"`
+	Processes []Process               `json:"processes,omitempty"`
+	History   []HistoryPoint          `json:"history,omitempty"`
+	Alerts    []Alert                 `json:"alerts,omitempty"`
+	Issues    []string                `json:"issues,omitempty"`
+	Elapsed   time.Duration           `json:"elapsed_ns"`
 }
 
 type Hardware struct {
@@ -46,12 +53,18 @@ type Hardware struct {
 }
 
 type CPU struct {
-	User   float64    `json:"user_percent"`
-	System float64    `json:"system_percent"`
-	Idle   float64    `json:"idle_percent"`
-	Busy   float64    `json:"busy_percent"`
-	Load   [3]float64 `json:"load_average"`
-	Cores  int        `json:"cores"`
+	User    float64    `json:"user_percent"`
+	System  float64    `json:"system_percent"`
+	Idle    float64    `json:"idle_percent"`
+	Busy    float64    `json:"busy_percent"`
+	Load    [3]float64 `json:"load_average"`
+	Cores   int        `json:"cores"`
+	PerCore []Core     `json:"per_core,omitempty"`
+}
+
+type Core struct {
+	ID   int     `json:"id"`
+	Busy float64 `json:"busy_percent"`
 }
 
 // Memory reports two numbers that are not complements of each other, because
@@ -106,11 +119,54 @@ type Network struct {
 }
 
 type Power struct {
-	Percent   int    `json:"percent"`
-	State     string `json:"state"`
-	Source    string `json:"source"`
-	Charging  bool   `json:"charging"`
-	Remaining string `json:"remaining,omitempty"`
+	Percent        int     `json:"percent"`
+	State          string  `json:"state"`
+	Source         string  `json:"source"`
+	Charging       bool    `json:"charging"`
+	Remaining      string  `json:"remaining,omitempty"`
+	Cycles         int     `json:"cycles,omitempty"`
+	MaxCapacity    int64   `json:"max_capacity,omitempty"`
+	DesignCapacity int64   `json:"design_capacity,omitempty"`
+	CapacityHealth float64 `json:"capacity_health_percent,omitempty"`
+}
+
+type GPU struct {
+	Device   float64 `json:"device_percent"`
+	Renderer float64 `json:"renderer_percent"`
+	Tiler    float64 `json:"tiler_percent"`
+}
+
+type Thermal struct {
+	Pressure       int   `json:"pressure"`
+	CPUSpeedLimit  int   `json:"cpu_speed_limit_percent,omitempty"`
+	SchedulerLimit int   `json:"scheduler_limit_percent,omitempty"`
+	FanRPM         []int `json:"fan_rpm,omitempty"`
+}
+
+type Proxy struct {
+	HTTP  string `json:"http,omitempty"`
+	HTTPS string `json:"https,omitempty"`
+	SOCKS string `json:"socks,omitempty"`
+}
+
+type BluetoothDevice struct {
+	Name    string `json:"name"`
+	Percent int    `json:"percent"`
+}
+
+type HistoryPoint struct {
+	At          time.Time `json:"at"`
+	CPU         float64   `json:"cpu_percent"`
+	Memory      float64   `json:"memory_pressure_percent"`
+	NetworkDown float64   `json:"network_down_bytes_per_second"`
+	NetworkUp   float64   `json:"network_up_bytes_per_second"`
+}
+
+type Alert struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+	PID     int    `json:"pid,omitempty"`
+	Samples int    `json:"samples"`
 }
 
 type Process struct {
@@ -163,6 +219,16 @@ func Collect(ctx context.Context) Snapshot {
 	waiter.Add(1)
 	go func() {
 		defer waiter.Done()
+		cores, issue := readPerCore(ctx)
+		mutex.Lock()
+		snapshot.CPU.PerCore = cores
+		mutex.Unlock()
+		note(issue)
+	}()
+
+	waiter.Add(1)
+	go func() {
+		defer waiter.Done()
 		network, issue := readNetwork(ctx)
 		mutex.Lock()
 		snapshot.Network = network
@@ -194,9 +260,40 @@ func Collect(ctx context.Context) Snapshot {
 	go func() {
 		defer waiter.Done()
 		power := readPower(ctx)
+		if power != nil {
+			enrichPower(ctx, power)
+		}
 		mutex.Lock()
 		snapshot.Power = power
 		mutex.Unlock()
+	}()
+
+	waiter.Add(1)
+	go func() {
+		defer waiter.Done()
+		gpu, thermal := readGPU(ctx), readThermal(ctx)
+		mutex.Lock()
+		snapshot.GPU, snapshot.Thermal = gpu, thermal
+		mutex.Unlock()
+	}()
+
+	waiter.Add(1)
+	go func() {
+		defer waiter.Done()
+		proxy, bluetooth := readProxy(ctx), readBluetooth(ctx)
+		mutex.Lock()
+		snapshot.Proxy, snapshot.Bluetooth = proxy, bluetooth
+		mutex.Unlock()
+	}()
+
+	waiter.Add(1)
+	go func() {
+		defer waiter.Done()
+		devices, issue := readStorageDevices(ctx)
+		mutex.Lock()
+		snapshot.Devices = devices
+		mutex.Unlock()
+		note(issue)
 	}()
 
 	waiter.Wait()

@@ -172,7 +172,7 @@ func TestMissingSettingsFileIsNotAnError(t *testing.T) {
 		t.Fatalf("LoadSettings: %v", err)
 	}
 	preferences := PreferencesFrom(settings)
-	if preferences.Keymap != "default" || preferences.Depth != 3 {
+	if preferences.Locale != "en_GB" || preferences.Keymap != "default" || preferences.Depth != 3 {
 		t.Errorf("defaults were not applied: %+v", preferences)
 	}
 }

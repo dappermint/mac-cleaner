@@ -167,6 +167,7 @@ func (s *Settings) Duration(key string, fallback time.Duration) time.Duration {
 // because no single default is right for everyone, which is the bar a setting
 // has to clear before it is added.
 type Preferences struct {
+	Locale    string        // shipped UI locale
 	Keymap    string        // default or vim
 	View      string        // which view opens first
 	Colour    string        // auto, always, never
@@ -183,6 +184,7 @@ func LoadPreferences(home string) (Preferences, *Settings, error) {
 
 func PreferencesFrom(settings *Settings) Preferences {
 	return Preferences{
+		Locale:    settings.String("locale", "en_GB"),
 		Keymap:    settings.String("keymap", "default"),
 		View:      settings.String("view", "auto"),
 		Colour:    settings.String("colour", settings.String("color", "auto")),

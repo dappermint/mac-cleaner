@@ -17,7 +17,7 @@ It never removes anything you did not mark, and everything it does is logged.
 
 ## the views
 
-`v` cycles, or `1` `2` `3`.
+`v` cycles, or `1` through `5` selects a view directly.
 
 **surface** is a complete accounting of physical storage. It starts at the APFS containers,
 drops into each volume, then walks the data volume directory by directory. Every level sums to
@@ -55,6 +55,10 @@ tier, the sibling paths it deliberately leaves alone. A target whose owning app 
 whose bundle holds credentials, or which you have whitelisted is skipped with the reason
 attached. The same checks run again immediately before removal.
 
+**apps** inventories applications from standard and nested install locations, shows their real
+allocated size and Homebrew cask ownership, then routes selected uninstalls through the same
+leftover guards and Trash funnel as the CLI.
+
 **health** answers whether there is reason to think the filesystem is damaged. SMART verdict,
 NVMe media errors, controller error log, spare blocks, endurance, unsafe shutdowns, container
 accounting, write headroom, and IO errors seen during the walk. Most of it costs nothing
@@ -63,6 +67,13 @@ because the walk gathers it anyway.
 Only IO errors and directory loops are direct evidence. For a verdict,
 `sudo rat surface --root --verify` runs a live `fsck_apfs` through diskutil. A live check
 cannot repair anything; that still means recovery mode.
+
+**status** samples per-core CPU, memory pressure, GPU use, disks, network, power, thermal state,
+storage health, proxies and Bluetooth batteries. It retains a short in-memory history and calls
+out processes that stay hot across samples.
+
+The surface view paints immediately from the last matching walk, then replaces it with a live
+scan. It reports large old downloads, directories that grew, and byte-identical large files.
 
 ## use
 
@@ -77,11 +88,13 @@ rat surface ~ --files --min-size 1GiB  # the largest files, from the walk it alr
 
 rat scan --deep --json                 # machine readable
 rat clean --all-safe --dry-run         # cleanup, previewed
+rat clean --external /Volumes/USB      # verified external-volume metadata cleanup
 
 rat uninstall --list                   # apps, and the exact name each answers to
 rat uninstall --dry-run Spotify        # the bundle plus everything it left behind
 rat purge --dry-run                    # project build artifacts
 rat installer --dry-run                # installer downloads
+rat optimize --list                    # bounded maintenance and documented refusals
 
 rat status --explain                   # live metrics, and how the load score was reached
 rat history --since 7d                 # what it did, and where the files went
@@ -126,6 +139,7 @@ keymap = vim          # default or vim
 view   = surface      # which view opens first
 depth  = 4            # default tree depth
 colour = auto         # auto, always, never
+locale = en_GB        # the only shipped locale for now
 
 [keys]
 mark          = m     # rebinding replaces the default key, it does not add to it
@@ -139,7 +153,8 @@ something never leaves it telling you to press a key that does nothing.
 
 The `vim` keymap adds `gg`, `G`, `ctrl-d` and `ctrl-u`, plus two modes. `v` starts a visual
 range: move to extend it, then `d` marks every row in it at once. `:` opens a command line
-understanding `:surface`, `:actions`, `:health`, `:clear`, `:marks` and `:q`. `escape` leaves
+understanding `:surface`, `:actions`, `:apps`, `:health`, `:status`, `:clear`, `:marks` and `:q`.
+`escape` leaves
 either mode, and the mode is shown in the status line so you always know which one you are in.
 The default keymap has no modes at all, so there is nothing to be stuck in.
 
@@ -184,6 +199,7 @@ internal/metrics     live cpu, memory, disk, network and power
 internal/plist       binary and xml property lists, parsed in process
 internal/history     reading the operation log back
 internal/config      whitelists and search paths
+internal/i18n        embedded locale catalogues and fallback rules
 internal/tui         renderer, the views, key handling
 internal/text        display primitives
 internal/cli         subcommands and non-interactive printers

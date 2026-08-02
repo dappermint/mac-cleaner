@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,9 @@ func ProcessNotRunning(names ...string) Guard {
 	return Guard{
 		Name: "process not running: " + strings.Join(names, ", "),
 		Allow: func(_ context.Context, env Env, _ string) (bool, string) {
+			if !env.ProcessesKnown {
+				return false, "the process list is unavailable"
+			}
 			for _, name := range names {
 				if env.Running(name) {
 					return false, name + " is running"
@@ -89,8 +93,8 @@ func AppAbsent() Guard {
 	return Guard{
 		Name: "the owning app is no longer installed",
 		Allow: func(_ context.Context, env Env, path string) (bool, string) {
-			if len(env.Installed) == 0 {
-				return false, "the installed application index is empty, so nothing can be proven absent"
+			if !env.InstalledKnown || len(env.Installed) == 0 {
+				return false, "the installed application index is incomplete, so nothing can be proven absent"
 			}
 			bundle := BundleFromPath(path)
 			if bundle == "" {
@@ -219,28 +223,57 @@ func BundleFromContainer(path string) string {
 // name, both lowercased. It is read once per scan, because the leftovers group
 // asks about it for every candidate path.
 func ReadInstalled(home string) map[string]bool {
+	installed, _ := ReadInstalledState(home)
+	return installed
+}
+
+func ReadInstalledState(home string) (map[string]bool, bool) {
 	installed := make(map[string]bool)
+	known := true
 	roots := []string{
 		"/Applications",
-		"/Applications/Utilities",
 		filepath.Join(home, "Applications"),
 		"/System/Applications",
-		"/System/Applications/Utilities",
 	}
 	for _, root := range roots {
-		entries, err := os.ReadDir(root)
-		if err != nil {
+		rootInfo, rootErr := os.Stat(root)
+		if errors.Is(rootErr, os.ErrNotExist) {
 			continue
 		}
-		for _, entry := range entries {
-			if filepath.Ext(entry.Name()) != ".app" {
-				continue
+		if rootErr != nil || !rootInfo.IsDir() {
+			known = false
+			continue
+		}
+		walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				known = false
+				return nil //nolint:nilerr // one unreadable app must not hide every other installed app
+			}
+			if path == root {
+				return nil
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil || strings.Count(relative, string(filepath.Separator)) >= 4 {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !entry.IsDir() || filepath.Ext(entry.Name()) != ".app" {
+				return nil
 			}
 			name := strings.TrimSuffix(entry.Name(), ".app")
 			installed[strings.ToLower(name)] = true
-			dict, err := plist.ReadFile(filepath.Join(root, entry.Name(), "Contents", "Info.plist"))
+			dict, err := plist.ReadFile(filepath.Join(path, "Contents", "Info.plist"))
 			if err != nil {
-				continue
+				known = false
+				return filepath.SkipDir
 			}
 			if bundle, ok := dict.String("CFBundleIdentifier"); ok && bundle != "" {
 				installed[strings.ToLower(bundle)] = true
@@ -248,17 +281,21 @@ func ReadInstalled(home string) map[string]bool {
 				// not read as abandoned just because no .app is named that.
 				installed[strings.ToLower(bundle)+".helper"] = true
 			}
+			return filepath.SkipDir
+		})
+		if walkErr != nil {
+			known = false
 		}
 	}
-	return installed
+	return installed, known
 }
 
 // ReadProcesses builds the process name set once per scan.
-func ReadProcesses(ctx context.Context) map[string]bool {
+func ReadProcesses(ctx context.Context) (map[string]bool, bool) {
 	processes := make(map[string]bool)
 	output, err := storage.CaptureCommand(ctx, processTimeout, "/bin/ps", "-Axco", "command")
 	if err != nil {
-		return processes
+		return processes, false
 	}
 	for line := range strings.SplitSeq(output, "\n") {
 		name := strings.TrimSpace(line)
@@ -267,5 +304,5 @@ func ReadProcesses(ctx context.Context) map[string]bool {
 		}
 		processes[strings.ToLower(name)] = true
 	}
-	return processes
+	return processes, true
 }

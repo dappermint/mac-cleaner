@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -193,11 +194,52 @@ func BrewCask(ctx context.Context, app App) string {
 	if err != nil {
 		return ""
 	}
-	target := strings.ToLower(strings.TrimSuffix(filepath.Base(app.Path), appSuffix))
+	target := filepath.Clean(app.Path)
 	for _, entry := range entries {
-		if normalize(entry.Name()) == normalize(target) {
+		if caskOwnsApp(ctx, entry.Name(), target) {
 			return entry.Name()
 		}
 	}
 	return ""
+}
+
+func caskOwnsApp(ctx context.Context, token, target string) bool {
+	brew := "/opt/homebrew/bin/brew"
+	if _, err := os.Stat(brew); err != nil {
+		brew = "/usr/local/bin/brew"
+		if _, err := os.Stat(brew); err != nil {
+			return false
+		}
+	}
+	output, err := storage.CaptureCommand(ctx, launchTimeout, brew, "list", "--cask", token)
+	if err != nil {
+		return false
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		listed := filepath.Clean(strings.TrimSpace(line))
+		if listed == target {
+			return true
+		}
+	}
+	return false
+}
+
+func BrewUninstall(ctx context.Context, funnel *safety.Funnel, token string, out io.Writer) error {
+	brew := "/opt/homebrew/bin/brew"
+	if _, err := os.Stat(brew); err != nil {
+		brew = "/usr/local/bin/brew"
+	}
+	display := "brew uninstall --cask " + token
+	request := safety.Request{Command: CommandName, Item: token}
+	if funnel.DryRun() {
+		fmt.Fprintln(out, "  would run "+display)
+		funnel.RecordCommand(request, display, nil)
+		return nil
+	}
+	command := exec.CommandContext(ctx, brew, "uninstall", "--cask", token)
+	command.Stdout = out
+	command.Stderr = out
+	err := command.Run()
+	funnel.RecordCommand(request, display, err)
+	return err
 }

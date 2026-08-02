@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dappermint/ratatouille/internal/config"
+	"github.com/dappermint/ratatouille/internal/diagnostic"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -135,14 +136,24 @@ func (o Options) budget() time.Duration {
 // path turns a catalog pass into a process storm.
 func NewEnv(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity) Env {
 	whitelist, _ := config.LoadWhitelist(home, config.WhitelistFile)
+	processes, processesKnown := ReadProcesses(ctx)
+	installed, installedKnown := ReadInstalledState(filepath.Clean(home))
+	if !installedKnown {
+		diagnostic.Printf(ctx, "catalog installed-app-index=incomplete")
+	}
+	if !processesKnown {
+		diagnostic.Printf(ctx, "catalog process-list=unavailable")
+	}
 	return Env{
-		Home:      filepath.Clean(home),
-		Rootful:   rootful,
-		Identity:  identity,
-		Whitelist: whitelist,
-		Processes: ReadProcesses(ctx),
-		Installed: ReadInstalled(filepath.Clean(home)),
-		Now:       time.Now(),
+		Home:           filepath.Clean(home),
+		Rootful:        rootful,
+		Identity:       identity,
+		Whitelist:      whitelist,
+		Processes:      processes,
+		ProcessesKnown: processesKnown,
+		Installed:      installed,
+		InstalledKnown: installedKnown,
+		Now:            time.Now(),
 	}
 }
 
@@ -150,6 +161,10 @@ func NewEnv(ctx context.Context, home string, rootful bool, identity *storage.Co
 // is left. A path already claimed by an earlier target is dropped rather than
 // counted twice, so the totals the interface prints add up.
 func Resolve(ctx context.Context, env Env, targets []Target, options Options) []Candidate {
+	started := time.Now()
+	defer func() {
+		diagnostic.Printf(ctx, "catalog targets=%d duration=%s", len(targets), time.Since(started).Round(time.Millisecond))
+	}()
 	ctx, cancel := context.WithTimeout(ctx, options.budget())
 	defer cancel()
 
@@ -170,6 +185,8 @@ func Resolve(ctx context.Context, env Env, targets []Target, options Options) []
 	// Library/Caches taking it first.
 	for _, index := range claimOrder(targets) {
 		target := targets[index]
+		loggedSkips := 0
+		suppressedSkips := 0
 		for _, path := range target.Expand(ctx, env) {
 			cleaned := filepath.Clean(path)
 			if owner, taken := claims.coveredBy(cleaned); taken {
@@ -180,15 +197,27 @@ func Resolve(ctx context.Context, env Env, targets []Target, options Options) []
 			if _, err := os.Lstat(cleaned); err != nil {
 				continue
 			}
+			// Reserve a specific path before its volatile guards run. A broader
+			// leftovers target must not relabel an active cache as orphaned just
+			// because the safer target noticed its owner was running.
+			claims.add(cleaned, target.ID)
 			if ok, reason := target.Allows(ctx, env, cleaned); !ok {
+				if loggedSkips < 8 {
+					diagnostic.Printf(ctx, "catalog target=%s path=%s skipped=%q", target.ID, storage.RelativeHome(env.Home, cleaned), reason)
+					loggedSkips++
+				} else {
+					suppressedSkips++
+				}
 				candidates[index].Skipped = append(candidates[index].Skipped, Skip{Path: cleaned, Reason: reason})
 				continue
 			}
 			// A sweep that contains an already-claimed subtree still gets a row,
 			// but it is measured without those bytes so the totals stay honest.
 			exclude := claims.within(cleaned)
-			claims.add(cleaned, target.ID)
 			jobs = append(jobs, job{targetIndex: index, path: cleaned, exclude: exclude})
+		}
+		if suppressedSkips > 0 {
+			diagnostic.Printf(ctx, "catalog target=%s skipped-suppressed=%d", target.ID, suppressedSkips)
 		}
 	}
 

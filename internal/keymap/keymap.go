@@ -35,7 +35,9 @@ const (
 	NextView    Action = "next-view"
 	ViewSurface Action = "view-surface"
 	ViewActions Action = "view-actions"
+	ViewApps    Action = "view-apps"
 	ViewHealth  Action = "view-health"
+	ViewStatus  Action = "view-status"
 	NextFilter  Action = "next-filter"
 
 	Toggle       Action = "toggle"
@@ -70,7 +72,7 @@ var Describe = map[Action]string{
 	HalfPageDown: "down half a screen", HalfPageUp: "up half a screen",
 	Fold: "fold a branch", Unfold: "unfold a branch",
 	NextView: "next view", ViewSurface: "surface view", ViewActions: "actions view",
-	ViewHealth: "health view", NextFilter: "next risk filter",
+	ViewApps: "apps view", ViewHealth: "health view", ViewStatus: "status view", NextFilter: "next risk filter",
 	Toggle: "select the row", ToggleSafe: "select every safe action",
 	Mark: "mark a directory for Trash", ClearMarks: "unmark everything",
 	Execute: "run the selection", ExecuteMarks: "trash the marked set",
@@ -81,7 +83,7 @@ var Describe = map[Action]string{
 // them rather than alphabetically.
 var Order = []Action{
 	Up, Down, Top, Bottom, HalfPageDown, HalfPageUp,
-	Fold, Unfold, NextView, ViewSurface, ViewActions, ViewHealth, NextFilter,
+	Fold, Unfold, NextView, ViewSurface, ViewActions, ViewApps, ViewHealth, ViewStatus, NextFilter,
 	Toggle, ToggleSafe, Mark, ClearMarks, Execute, ExecuteMarks, Details,
 	Visual, Command, Rescan, Help, Confirm, Escape, Quit,
 }
@@ -254,7 +256,9 @@ func Default() *Map {
 	m.bind(Normal, NextView, "v")
 	m.bind(Normal, ViewSurface, "1")
 	m.bind(Normal, ViewActions, "2")
-	m.bind(Normal, ViewHealth, "3")
+	m.bind(Normal, ViewApps, "3")
+	m.bind(Normal, ViewHealth, "4")
+	m.bind(Normal, ViewStatus, "5")
 	m.bind(Normal, NextFilter, "tab")
 	m.bind(Normal, Toggle, "space")
 	m.bind(Normal, ToggleSafe, "a")

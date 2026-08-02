@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dappermint/ratatouille/internal/catalog"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -67,8 +68,16 @@ type Item struct {
 	Bytes       int64            `json:"bytes"`
 	Modified    *time.Time       `json:"modified,omitempty"`
 	Estimate    string           `json:"estimate"`
+	Evidence    *CatalogEvidence `json:"evidence,omitempty"`
 	Action      *Action          `json:"action,omitempty"`
 	Unavailable string           `json:"unavailable,omitempty"`
+}
+
+type CatalogEvidence struct {
+	Status       catalog.EvidenceStatus `json:"status"`
+	Claim        string                 `json:"claim"`
+	Observations []catalog.Observation  `json:"observations,omitempty"`
+	LeavesAlone  []string               `json:"leaves_alone,omitempty"`
 }
 
 func (i Item) Selectable() bool {
@@ -84,6 +93,8 @@ type Report struct {
 	Health      *Health      `json:"health,omitempty"`
 	Items       []Item       `json:"items"`
 	Issues      []string     `json:"issues,omitempty"`
+	Insights    []Insight    `json:"insights,omitempty"`
+	Cached      bool         `json:"cached,omitempty"`
 }
 
 func (r *Report) Sort() {

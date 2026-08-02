@@ -6,6 +6,7 @@ package uninstall
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -88,21 +89,39 @@ func Inventory(ctx context.Context, env Env) []App {
 	var apps []App
 	seen := make(map[string]bool)
 	for _, root := range roots(env.Home) {
-		entries, err := os.ReadDir(root.path)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if filepath.Ext(entry.Name()) != appSuffix {
-				continue
+		_ = filepath.WalkDir(root.path, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil || ctx.Err() != nil {
+				return filepath.SkipDir
 			}
-			path := filepath.Join(root.path, entry.Name())
+			if path == root.path {
+				return nil
+			}
+			relative, err := filepath.Rel(root.path, path)
+			if err != nil {
+				return filepath.SkipDir
+			}
+			if strings.Count(relative, string(filepath.Separator)) >= 4 {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if filepath.Ext(entry.Name()) != appSuffix || !entry.IsDir() {
+				return nil
+			}
 			if seen[path] {
-				continue
+				return filepath.SkipDir
 			}
 			seen[path] = true
 			apps = append(apps, describe(path, root.scope))
-		}
+			return filepath.SkipDir
+		})
 	}
 	size(ctx, apps)
 	sort.SliceStable(apps, func(a, b int) bool {

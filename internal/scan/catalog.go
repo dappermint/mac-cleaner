@@ -80,6 +80,12 @@ func (s Scanner) catalogItem(target catalog.Target, measurements []catalog.Measu
 		Bytes:    bytes,
 		Modified: newest,
 		Estimate: estimate,
+		Evidence: &CatalogEvidence{
+			Status:       target.Qualification,
+			Claim:        target.Evidence,
+			Observations: append([]catalog.Observation(nil), target.Observations...),
+			LeavesAlone:  append([]string(nil), target.NotTargets...),
+		},
 		Action: &Action{
 			Kind:      ActionTrash,
 			Paths:     paths,
@@ -166,6 +172,13 @@ func CatalogExplain(id string) string {
 		return ""
 	}
 	lines := []string{"evidence: " + target.Evidence}
+	if target.Qualification == catalog.EvidenceObserved && len(target.Observations) > 0 {
+		observation := target.Observations[len(target.Observations)-1]
+		lines = append(lines, fmt.Sprintf("measured: %s on %s %s, macOS %s",
+			storage.HumanBytes(observation.Bytes), observation.Product, observation.Version, observation.MacOS))
+	} else {
+		lines = append(lines, "measured: pending real-machine qualification")
+	}
 	if len(target.NotTargets) > 0 {
 		lines = append(lines, "leaves alone: "+strings.Join(target.NotTargets, "; "))
 	}

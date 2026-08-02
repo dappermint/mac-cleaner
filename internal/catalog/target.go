@@ -59,7 +59,7 @@ type PathKind int
 const (
 	// PathHome is a literal path under the invoking user's home.
 	PathHome PathKind = iota
-	// PathGlob is a filepath.Match pattern under the home, expanded once.
+	// PathGlob is a filepath.Match pattern under the home unless it is absolute.
 	PathGlob
 	// PathAbsolute is a literal path outside any home.
 	PathAbsolute
@@ -91,12 +91,18 @@ type Env struct {
 	Identity  *storage.CommandIdentity
 	Whitelist *config.Whitelist
 	Processes map[string]bool
-	Now       time.Time
+	// ProcessesKnown distinguishes a genuinely empty process list from a failed
+	// read. Process-sensitive cleanup must refuse when this is false.
+	ProcessesKnown bool
+	Now            time.Time
 
 	// Installed is every bundle id and app name currently on the machine. The
 	// leftovers group needs to know what is gone, and the only way to know that
 	// is to know what is still here.
 	Installed map[string]bool
+	// InstalledKnown is true only when every configured application root and
+	// every app bundle in scope was readable.
+	InstalledKnown bool
 }
 
 // AppPresent reports whether an app with this bundle id or display name is
@@ -104,7 +110,7 @@ type Env struct {
 // nothing is treated as absent, because guessing wrong here removes the data of
 // a working app.
 func (e Env) AppPresent(name string) bool {
-	if len(e.Installed) == 0 {
+	if !e.InstalledKnown || len(e.Installed) == 0 {
 		return true
 	}
 	return e.Installed[strings.ToLower(name)]
@@ -150,13 +156,27 @@ type Target struct {
 	Sweep bool
 
 	// Evidence says what proves this path is what we think it is.
-	Evidence string
-	// Measured is bytes reclaimed on a real machine. A target with no measured
-	// value does not belong in the catalog.
-	Measured string
+	Evidence      string
+	Qualification EvidenceStatus
+	Observations  []Observation
 	// NotTargets are the sibling paths deliberately excluded, and why. Required
 	// for anything above RiskSafe.
 	NotTargets []string
+}
+
+type EvidenceStatus string
+
+const (
+	EvidenceObserved EvidenceStatus = "observed"
+	EvidencePending  EvidenceStatus = "pending"
+)
+
+type Observation struct {
+	Product    string    `json:"product"`
+	Version    string    `json:"version"`
+	MacOS      string    `json:"macos"`
+	Bytes      int64     `json:"bytes"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // Allows runs the guard chain. The whitelist is consulted last, so a user
@@ -187,7 +207,11 @@ func (t Target) Expand(ctx context.Context, env Env) []string {
 		case PathAbsolute:
 			paths = append(paths, filepath.Clean(spec.Pattern))
 		case PathGlob:
-			matches, err := filepath.Glob(filepath.Join(env.Home, spec.Pattern))
+			pattern := spec.Pattern
+			if !filepath.IsAbs(pattern) {
+				pattern = filepath.Join(env.Home, pattern)
+			}
+			matches, err := filepath.Glob(pattern)
 			if err != nil {
 				continue
 			}

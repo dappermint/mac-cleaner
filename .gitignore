@@ -5,4 +5,6 @@ result-*
 .DS_Store
 
 # working notes, not published yet
-docs/
+docs/*
+!docs/parity.md
+!docs/localisation.md

@@ -38,7 +38,7 @@ func runPurgeCommand(ctx context.Context, home string, identity *storage.Command
 
 	artifacts, issues := purge.Find(ctx, home, purge.Options{MinAge: *minAge})
 	if *jsonOutput {
-		return writeJSON(out, map[string]any{"artifacts": artifacts, "issues": issues})
+		return writeJSON(out, "purge", map[string]any{"artifacts": artifacts, "issues": issues})
 	}
 	if len(artifacts) == 0 {
 		fmt.Fprintf(out, "no build artifacts under %s\n", strings.Join(shortRoots(home, purge.Roots(home, purge.Options{})), ", "))
@@ -108,7 +108,7 @@ func runInstallerCommand(ctx context.Context, home string, identity *storage.Com
 
 	files := installer.Find(ctx, home, installer.Options{MinSize: floor})
 	if *jsonOutput {
-		return writeJSON(out, map[string]any{"files": files})
+		return writeJSON(out, "installers", map[string]any{"files": files})
 	}
 	if len(files) == 0 {
 		fmt.Fprintln(out, "no installer files above the size floor")
@@ -276,7 +276,7 @@ func runCompletionCommand(args []string, out io.Writer) error {
 // rewriting the binary. A binary that overwrites itself inside a read-only Nix
 // store path is wrong, and one that does it behind Homebrew's back leaves brew
 // believing the old version is installed.
-func runUpdateCommand(out io.Writer, executable string) error {
+func runUpdateCommand(out io.Writer, executable string) {
 	resolved, err := filepath.EvalSymlinks(executable)
 	if err != nil {
 		resolved = executable
@@ -296,7 +296,6 @@ func runUpdateCommand(out io.Writer, executable string) error {
 		fmt.Fprintln(out, "  brew install dappermint/tap/ratatouille")
 		fmt.Fprintln(out, "  nix profile install github:dappermint/ratatouille")
 	}
-	return nil
 }
 
 const touchIDFile = "/etc/pam.d/sudo_local"
@@ -452,7 +451,7 @@ func runOptimizeCommand(ctx context.Context, home string, rootful bool, identity
 
 	results := optimize.Run(ctx, env, tasks, log)
 	if *jsonOutput {
-		return writeJSON(out, results)
+		return writeJSON(out, "optimize-results", results)
 	}
 	for _, result := range results {
 		fmt.Fprintf(out, "%-12s %-28s %s\n", result.Outcome, result.Name, result.Detail)
@@ -473,7 +472,7 @@ func runOptimizeCommand(ctx context.Context, home string, rootful bool, identity
 
 func listTasks(out io.Writer, tasks []optimize.Task, jsonOutput bool) error {
 	if jsonOutput {
-		return writeJSON(out, map[string]any{"tasks": tasks, "declined": optimize.DeclinedTasks()})
+		return writeJSON(out, "optimize-tasks", map[string]any{"tasks": tasks, "declined": optimize.DeclinedTasks()})
 	}
 	fmt.Fprintf(out, "%-24s %-6s %-12s %s\n", "id", "root", "reverses", "changes")
 	for _, task := range tasks {

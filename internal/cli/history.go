@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,9 +36,7 @@ func runHistoryCommand(home string, args []string, out, errOut io.Writer) error 
 	}
 
 	if *jsonOutput {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(entries)
+		return writeJSON(out, "history", entries)
 	}
 	printHistory(out, home, entries)
 	return nil
