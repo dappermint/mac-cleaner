@@ -116,6 +116,33 @@ with older ones; `rat history` tells you exactly where things went and lets you 
 remove something from a selection, never add one, and it cannot make a protected path
 cleanable.
 
+## config
+
+`~/.config/ratatouille/config` is optional. Sections are `[name]`, entries are `key = value`,
+`#` starts a comment.
+
+```ini
+keymap = vim          # default or vim
+view   = surface      # which view opens first
+depth  = 4            # default tree depth
+colour = auto         # auto, always, never
+
+[keys]
+mark          = m     # rebinding replaces the default key, it does not add to it
+execute-marks = X
+```
+
+`rat config show` prints every setting with whether it came from the file or a default, and
+`rat config keys` prints the resolved bindings, so what it lists is what the interface will
+actually do. The help overlay is generated from the same table, which is why rebinding
+something never leaves it telling you to press a key that does nothing.
+
+The `vim` keymap adds `gg`, `G`, `ctrl-d` and `ctrl-u`, plus two modes. `v` starts a visual
+range: move to extend it, then `d` marks every row in it at once. `:` opens a command line
+understanding `:surface`, `:actions`, `:health`, `:clear`, `:marks` and `:q`. `escape` leaves
+either mode, and the mode is shown in the status line so you always know which one you are in.
+The default keymap has no modes at all, so there is nothing to be stuck in.
+
 ## install
 
 ```sh

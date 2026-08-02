@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, contents string) string {
@@ -95,5 +96,103 @@ func TestDirPrefersTheExplicitOverride(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	if got := Dir("/Users/someone"); got != "/Users/someone/.config/ratatouille" {
 		t.Errorf("Dir = %q, want the default", got)
+	}
+}
+
+func TestSettingsParse(t *testing.T) {
+	settings, err := ParseSettings(`
+# a comment
+keymap = vim
+depth = 5
+purge.trash = yes
+
+[keys]
+mark = m, M
+execute-marks = X
+
+[keys.visual]
+mark = d
+`)
+	if err != nil {
+		t.Fatalf("ParseSettings: %v", err)
+	}
+	if got := settings.String("keymap", "default"); got != "vim" {
+		t.Errorf("keymap = %q", got)
+	}
+	if got := settings.Int("depth", 3); got != 5 {
+		t.Errorf("depth = %d", got)
+	}
+	if !settings.Bool("purge.trash", false) {
+		t.Error("purge.trash did not read as true")
+	}
+	if got := settings.List("keys.mark"); len(got) != 2 || got[0] != "m" || got[1] != "M" {
+		t.Errorf("keys.mark = %v", got)
+	}
+	if got := settings.String("keys.visual.mark", ""); got != "d" {
+		t.Errorf("keys.visual.mark = %q", got)
+	}
+	if settings.Has("keys.nothing") {
+		t.Error("an absent key reported present")
+	}
+}
+
+// A line the parser cannot read has to be an error. Skipping it silently means
+// a typo turns into a setting that never took effect.
+func TestSettingsRejectMalformedLines(t *testing.T) {
+	for _, contents := range []string{"keymap vim\n", "= value\n", "[keys]\nbroken line\n"} {
+		if _, err := ParseSettings(contents); err == nil {
+			t.Errorf("accepted malformed settings: %q", contents)
+		}
+	}
+}
+
+func TestSettingsDurationAcceptsDaysAndWeeks(t *testing.T) {
+	settings, err := ParseSettings("a = 7d\nb = 2w\nc = 90m\nd = nonsense\n")
+	if err != nil {
+		t.Fatalf("ParseSettings: %v", err)
+	}
+	cases := map[string]time.Duration{
+		"a": 7 * 24 * time.Hour,
+		"b": 14 * 24 * time.Hour,
+		"c": 90 * time.Minute,
+		"d": time.Hour,
+	}
+	for key, want := range cases {
+		if got := settings.Duration(key, time.Hour); got != want {
+			t.Errorf("Duration(%q) = %s, want %s", key, got, want)
+		}
+	}
+}
+
+func TestMissingSettingsFileIsNotAnError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(EnvDir, filepath.Join(home, "nothing-here"))
+	settings, err := LoadSettings(home)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	preferences := PreferencesFrom(settings)
+	if preferences.Keymap != "default" || preferences.Depth != 3 {
+		t.Errorf("defaults were not applied: %+v", preferences)
+	}
+}
+
+func TestColourResolution(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	if !(Preferences{Colour: "auto"}).UseColour(true) {
+		t.Error("auto on a terminal should use colour")
+	}
+	if (Preferences{Colour: "auto"}).UseColour(false) {
+		t.Error("auto off a terminal should not use colour")
+	}
+	if !(Preferences{Colour: "always"}).UseColour(false) {
+		t.Error("always should use colour even off a terminal")
+	}
+	if (Preferences{Colour: "never"}).UseColour(true) {
+		t.Error("never should not use colour")
+	}
+	t.Setenv("NO_COLOR", "1")
+	if (Preferences{Colour: "auto"}).UseColour(true) {
+		t.Error("NO_COLOR should win under auto")
 	}
 }

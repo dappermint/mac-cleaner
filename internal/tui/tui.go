@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
@@ -361,6 +362,12 @@ type tuiState struct {
 	expanded    map[string]bool
 	marked      map[string]bool
 	markedBytes map[string]int64
+	keys        *keymap.Map
+	configPath  string
+	mode        keymap.Mode
+	pending     string
+	command     string
+	anchor      int
 	filterIndex int
 	notice      string
 	color       bool
@@ -383,7 +390,7 @@ func (state *tuiState) setOffset(value int) {
 	state.offsets[state.view] = value
 }
 
-func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, funnel *safety.Funnel, out io.Writer) error {
+func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, funnel *safety.Funnel, keys *keymap.Map, configPath string, out io.Writer) error {
 	renderer := newScreenRenderer(out)
 	renderer.Enter()
 	defer renderer.Exit()
@@ -408,11 +415,15 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 		expanded:    defaultExpansion(surfaceRoot(report), report.Disk.Path),
 		marked:      make(map[string]bool),
 		markedBytes: make(map[string]int64),
+		keys:        keys,
+		configPath:  configPath,
+		mode:        keymap.Normal,
+		anchor:      -1,
 		color:       os.Getenv("NO_COLOR") == "",
 		rootful:     rootful,
 	}
 	state.view = state.openingView()
-	keys, resumeKeys := readKeyStream(ctx)
+	presses, resumeKeys := readKeyStream(ctx)
 
 	for {
 		state.render(renderer)
@@ -422,55 +433,86 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 		case <-resize:
 			renderer.Resize()
 			continue
-		case event := <-keys:
+		case event := <-presses:
 			if event.err != nil {
 				if errors.Is(event.err, io.EOF) {
 					return nil
 				}
 				return event.err
 			}
-			switch event.key {
-			case "q", "ctrl-c":
+			// A key press resolves to a named action first, so the bindings
+			// live in one table a user can rebind rather than in this switch.
+			action, pending := state.keys.Lookup(state.mode, state.pending, event.key)
+			if pending {
+				state.pending += event.key
+				break
+			}
+			state.pending = ""
+			if state.mode == keymap.Cmdline {
+				done, quit := state.commandKey(action, event.key)
+				if quit {
+					return nil
+				}
+				if !done {
+					break
+				}
+			}
+
+			switch action {
+			case keymap.Quit:
 				return nil
-			case "up", "k":
-				if state.cursor() > 0 {
-					state.setCursor(state.cursor() - 1)
-				}
-			case "down", "j":
-				if state.cursor()+1 < state.rowCount() {
-					state.setCursor(state.cursor() + 1)
-				}
-			case "tab":
+			case keymap.Up:
+				state.moveBy(-1)
+			case keymap.Down:
+				state.moveBy(1)
+			case keymap.Top:
+				state.setCursor(0)
+			case keymap.Bottom:
+				state.setCursor(state.rowCount() - 1)
+			case keymap.HalfPageDown:
+				state.moveBy(state.pageStep(renderer))
+			case keymap.HalfPageUp:
+				state.moveBy(-state.pageStep(renderer))
+			case keymap.NextFilter:
 				state.cycleFilter()
-			case "v":
+			case keymap.NextView:
 				state.cycleView()
-			case "1":
+			case keymap.ViewSurface:
 				state.view = viewSurface
-			case "2":
+			case keymap.ViewActions:
 				state.view = viewActions
-			case "3":
+			case keymap.ViewHealth:
 				state.view = viewHealth
-			case "right", "l":
+			case keymap.Unfold:
 				if state.view == viewSurface {
 					state.toggleSurfaceRow()
 				}
-			case "left", "h":
+			case keymap.Fold:
 				if state.view == viewSurface {
 					state.collapseSurfaceRow()
 				}
-			case "space":
+			case keymap.Visual:
+				state.enterVisual()
+			case keymap.Command:
+				state.enterCommand()
+			case keymap.Escape:
+				state.leaveMode()
+			case keymap.ClearMarks:
+				state.clearMarks()
+				state.notice = "marks cleared"
+			case keymap.Toggle:
 				if state.view == viewSurface {
 					state.toggleSurfaceRow()
 					break
 				}
-				state.toggleCurrent()
-			case "d":
-				if state.view == viewSurface {
-					state.toggleMark()
-				}
-			case "a":
+				state.applyToRange(state.toggleAt)
+			case keymap.ToggleSafe:
 				state.toggleSafe()
-			case "enter":
+			case keymap.Mark:
+				if state.view == viewSurface {
+					state.applyToRange(state.markAt)
+				}
+			case keymap.Details:
 				if state.view == viewSurface {
 					state.toggleSurfaceRow()
 					break
@@ -478,14 +520,14 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				if state.view == viewActions {
 					state.showDetails(renderer)
 				}
-			case "?":
+			case keymap.Help:
 				state.showHelp(renderer)
-			case "c", "x":
+			case keymap.Execute, keymap.ExecuteMarks:
 				var items []scan.Item
-				if event.key == "x" {
+				if action == keymap.ExecuteMarks {
 					marked, ok := state.markedItem(identity)
 					if !ok {
-						state.notice = "nothing marked, press d on a directory in the surface view"
+						state.notice = "nothing marked, press " + state.keyFor(keymap.Mark) + " on a directory in the surface view"
 						break
 					}
 					items = []scan.Item{marked}
@@ -527,7 +569,7 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				if err := terminal.Enter(); err != nil {
 					return err
 				}
-			case "r":
+			case keymap.Rescan:
 				terminal.Restore()
 				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(rootful), identity, renderer, resize, "indexing storage")
 				if scanErr != nil {
@@ -585,6 +627,10 @@ func (state *tuiState) reset(report scan.Report) {
 	state.notice = ""
 	state.expanded = defaultExpansion(surfaceRoot(report), report.Disk.Path)
 	state.clearMarks()
+	state.mode = keymap.Normal
+	state.pending = ""
+	state.command = ""
+	state.anchor = -1
 	state.view = state.openingView()
 }
 
@@ -1074,10 +1120,18 @@ func (state *tuiState) statusLine(width int) string {
 		state.notice = ""
 		return state.paint(colorAmber, text.Truncate(notice, width))
 	}
+	status := "scope=" + state.scope() + "  notes=0  allocated-blocks"
 	if len(state.report.Issues) > 0 {
-		return state.paint(colorFog, text.Truncate(fmt.Sprintf("scope=%s  notes=%d  allocated-blocks", state.scope(), len(state.report.Issues)), width))
+		status = fmt.Sprintf("scope=%s  notes=%d  allocated-blocks", state.scope(), len(state.report.Issues))
 	}
-	return state.paint(colorFog, text.Truncate("scope="+state.scope()+"  notes=0  allocated-blocks", width))
+	if mode := state.modeLabel(); mode != "" {
+		colour := colorFog
+		if state.mode != keymap.Normal {
+			colour = colorAmber
+		}
+		return state.paint(colour, text.Truncate(mode+"  "+status, width))
+	}
+	return state.paint(colorFog, text.Truncate(status, width))
 }
 
 func (state *tuiState) scope() string {
@@ -1171,34 +1225,32 @@ func (state *tuiState) showDetails(renderer *screenRenderer) {
 
 func (state *tuiState) showHelp(renderer *screenRenderer) {
 	height, width := renderer.Size()
-	plain := []string{
-		"keymap",
+	// The help is generated from the live keymap. A hardcoded list tells a user
+	// who rebound something to press a key that does nothing.
+	plain := []string{"keymap: " + state.keys.Name(), ""}
+	for _, action := range state.keys.Actions(keymap.Normal) {
+		keys := strings.Join(state.keys.Keys(keymap.Normal, action), "  ")
+		plain = append(plain, fmt.Sprintf("%-14s %s", keys, keymap.Describe[action]))
+	}
+	if state.keys.Modal() {
+		plain = append(plain, "", "visual mode")
+		for _, action := range state.keys.Actions(keymap.Visual_) {
+			keys := strings.Join(state.keys.Keys(keymap.Visual_, action), "  ")
+			plain = append(plain, fmt.Sprintf("%-14s %s over the selected rows", keys, keymap.Describe[action]))
+		}
+		plain = append(plain, "", "command line", ":surface :actions :health :clear :marks :q")
+	}
+	plain = append(plain,
 		"",
-		"j/k  move                     v  next view",
-		"1  surface   2  actions   3  health",
-		"",
-		"surface view",
-		"h/l or arrows  fold and unfold a branch",
-		"d  mark a directory for Trash   x  execute the marked set",
-		"a marked directory swallows anything marked inside it, so the",
-		"running total is the bytes you actually get back",
-		"every level sums to its parent, remainders and unreadable trees included",
-		"",
-		"actions view",
-		"tab  next risk filter        space  mark",
-		"a  mark safe set             enter  inspect",
-		"c  execute marked set        r  rescan",
-		"",
-		"safe         supported command",
+		"safe         supported command or proven evidence",
 		"review       explicit mark",
 		"destructive  exact confirmation",
 		"protected    read-only",
 		"",
-		"health view lists device, container and walk signals worst first",
-		"",
-		"--root       System Data, macOS, Other Users & Shared",
-		"--verify     live filesystem check, root only",
-	}
+		"every level sums to its parent, remainders and unreadable trees included",
+		"bindings live in "+state.configPath,
+	)
+
 	lines := make([]string, 0, height)
 	for index, line := range plain {
 		line = text.Truncate(line, width)
@@ -1426,33 +1478,72 @@ func readKey() (string, error) {
 		return "", err
 	}
 	switch buffer[0] {
+	case 2:
+		return "ctrl-b", nil
 	case 3:
 		return "ctrl-c", nil
+	case 4:
+		return "ctrl-d", nil
+	case 6:
+		return "ctrl-f", nil
 	case 9:
 		return "tab", nil
+	case 21:
+		return "ctrl-u", nil
+	case 23:
+		return "ctrl-w", nil
+	case 127, 8:
+		return "backspace", nil
 	case '\r', '\n':
 		return "enter", nil
 	case ' ':
 		return "space", nil
 	case 27:
-		sequence := make([]byte, 2)
-		if _, err := io.ReadFull(os.Stdin, sequence); err != nil {
-			return "", err
-		}
-		if sequence[0] == '[' {
-			switch sequence[1] {
-			case 'A':
-				return "up", nil
-			case 'B':
-				return "down", nil
-			case 'C':
-				return "right", nil
-			case 'D':
-				return "left", nil
-			}
-		}
-		return "escape", nil
+		return readEscape()
 	default:
 		return string(buffer), nil
 	}
 }
+
+// readEscape distinguishes a bare Escape from the start of an arrow sequence.
+// Waiting unconditionally for two more bytes makes Escape hang until the next
+// key, which is unusable once there are modes to leave.
+func readEscape() (string, error) {
+	if err := os.Stdin.SetReadDeadline(time.Now().Add(escapeWindow)); err != nil {
+		// A stdin that cannot take a deadline falls back to the blocking read,
+		// which is what this did before modes existed.
+		sequence := make([]byte, 2)
+		if _, err := io.ReadFull(os.Stdin, sequence); err != nil {
+			return "", err
+		}
+		return arrowFrom(sequence), nil
+	}
+	defer func() { _ = os.Stdin.SetReadDeadline(time.Time{}) }()
+
+	sequence := make([]byte, 2)
+	if _, err := io.ReadFull(os.Stdin, sequence); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return "escape", nil
+		}
+		return "", err
+	}
+	return arrowFrom(sequence), nil
+}
+
+func arrowFrom(sequence []byte) string {
+	if sequence[0] == '[' {
+		switch sequence[1] {
+		case 'A':
+			return "up"
+		case 'B':
+			return "down"
+		case 'C':
+			return "right"
+		case 'D':
+			return "left"
+		}
+	}
+	return "escape"
+}
+
+const escapeWindow = 40 * time.Millisecond

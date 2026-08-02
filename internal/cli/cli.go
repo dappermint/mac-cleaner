@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dappermint/ratatouille/internal/config"
+	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/safety"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
@@ -36,13 +38,21 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 		return err
 	}
 	log := safety.OpenLog(home, identity)
+	settings, settingsErr := config.LoadSettings(home)
+	if settingsErr != nil {
+		fmt.Fprintf(errOut, "config: %v\n", settingsErr)
+	}
 
 	if len(args) == 0 {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 			printUsage(out)
 			return nil
 		}
-		return tui.Run(ctx, home, rootful, identity, safety.NewFunnel(home, identity, false, log), out)
+		keys, keyErr := keymap.Load(settings)
+		if keyErr != nil {
+			return keyErr
+		}
+		return tui.Run(ctx, home, rootful, identity, safety.NewFunnel(home, identity, false, log), keys, config.Path(home, config.SettingsFile), out)
 	}
 
 	switch args[0] {
@@ -634,7 +644,7 @@ usage:
   ratatouille installer [--min-size 16MiB] [--dry-run] [--json]
   ratatouille optimize [--list] [--dry-run] [--only ids] [--skip ids] [--json]
   ratatouille status [--watch] [--interval 2s] [--explain] [--json]
-  ratatouille config <show|path|whitelist|optimize-whitelist|purge-paths>
+  ratatouille config <show|path|keys|whitelist|optimize-whitelist|purge-paths>
   ratatouille completion <fish|zsh|bash>
   ratatouille touchid <status|enable|disable>
   ratatouille update

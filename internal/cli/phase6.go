@@ -15,6 +15,7 @@ import (
 
 	"github.com/dappermint/ratatouille/internal/config"
 	"github.com/dappermint/ratatouille/internal/installer"
+	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/optimize"
 	"github.com/dappermint/ratatouille/internal/purge"
 	"github.com/dappermint/ratatouille/internal/safety"
@@ -138,7 +139,7 @@ func runInstallerCommand(ctx context.Context, home string, identity *storage.Com
 
 func runConfigCommand(home string, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("config needs a subcommand: show, path, whitelist, purge-paths")
+		return errors.New("config needs a subcommand: show, path, keys, whitelist, purge-paths")
 	}
 	switch args[0] {
 	case "path":
@@ -155,14 +156,73 @@ func runConfigCommand(home string, args []string, out, errOut io.Writer) error {
 	case "purge-paths":
 		return showList(home, config.PurgePathsFile, out,
 			"one project search root per line, replacing the defaults")
+	case "keys", "keymap":
+		return showKeys(home, out)
 	default:
 		fmt.Fprintf(errOut, "unknown config subcommand %q\n", args[0])
-		return errors.New("config needs one of: show, path, whitelist, optimize-whitelist, purge-paths")
+		return errors.New("config needs one of: show, path, keys, whitelist, optimize-whitelist, purge-paths")
 	}
 }
 
+// showKeys prints the resolved bindings rather than the preset's, so what it
+// shows is what the interface will actually do.
+func showKeys(home string, out io.Writer) error {
+	settings, err := config.LoadSettings(home)
+	if err != nil {
+		return err
+	}
+	bindings, err := keymap.Load(settings)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "keymap %s, from %s\n\n", bindings.Name(), config.Path(home, config.SettingsFile))
+	for _, mode := range []keymap.Mode{keymap.Normal, keymap.Visual_, keymap.Cmdline} {
+		actions := bindings.Actions(mode)
+		if len(actions) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "[%s]\n", mode)
+		for _, action := range actions {
+			fmt.Fprintf(out, "  %-16s %-18s %s\n",
+				action, strings.Join(bindings.Keys(mode, action), " "), keymap.Describe[action])
+		}
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "rebind by adding to the config file:")
+	fmt.Fprintln(out, "  keymap = vim")
+	fmt.Fprintln(out, "  [keys]")
+	fmt.Fprintln(out, "  mark = m")
+	fmt.Fprintln(out, "  execute-marks = X")
+	return nil
+}
+
 func showConfig(home string, out io.Writer) error {
+	settings, err := config.LoadSettings(home)
+	if err != nil {
+		return err
+	}
+	preferences := config.PreferencesFrom(settings)
 	fmt.Fprintf(out, "config directory  %s\n\n", config.Dir(home))
+	fmt.Fprintf(out, "%-18s %-22s %s\n", "setting", "value", "source")
+	for _, setting := range []struct {
+		key   string
+		value string
+	}{
+		{"keymap", preferences.Keymap},
+		{"view", preferences.View},
+		{"colour", preferences.Colour},
+		{"depth", itoa(preferences.Depth)},
+		{"status.interval", preferences.Interval.String()},
+		{"purge.min-age", preferences.PurgeAge.String()},
+		{"purge.trash", boolText(preferences.TrashOnly)},
+	} {
+		source := "default"
+		if settings.Has(setting.key) {
+			source = "config"
+		}
+		fmt.Fprintf(out, "%-18s %-22s %s\n", setting.key, setting.value, source)
+	}
+	fmt.Fprintln(out)
 	for _, file := range []string{config.WhitelistFile, config.OptimizeWhitelistFile, config.PurgePathsFile} {
 		path := config.Path(home, file)
 		status := "not present, nothing is protected by it"
@@ -286,6 +346,17 @@ func touchIDStatus(out io.Writer) error {
 	}
 	fmt.Fprintf(out, "not enabled, %s exists but does not load pam_tid.so\n", touchIDFile)
 	return nil
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func itoa(value int) string {
+	return fmt.Sprintf("%d", value)
 }
 
 // since renders one consistent unit in the column rather than a date on some
