@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
@@ -48,6 +49,7 @@ func TestEveryViewSurvivesEveryTerminalSize(t *testing.T) {
 					expanded: defaultExpansion(surfaceRoot(report), report.Disk.Path, 2),
 					view:     view,
 					color:    true,
+					keys:     keymap.Default(),
 				}
 				for step := 0; step < 5; step++ {
 					var sink strings.Builder

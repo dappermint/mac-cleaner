@@ -190,7 +190,7 @@ func (state *tuiState) narrowLine(focused bool, color, label string, width int) 
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
 	return cursor + " " + state.paint(color, text.Truncate(text.Clean(label), width-2))
 }
@@ -220,7 +220,7 @@ func (state *tuiState) surfaceLine(row surfaceRow, focused bool, width int) stri
 
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
 	glyph := "·"
 	if len(row.node.Children) > 0 {
@@ -421,7 +421,7 @@ func (state *tuiState) healthLine(row healthRow, focused bool, width int) string
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
 	return cursor + " " +
 		state.paint(healthColor(row.level), text.PadRight(string(row.level), levelWidth)) + " " +

@@ -40,9 +40,9 @@ func (state *tuiState) appTableHeader(width int) string {
 func (state *tuiState) appLine(app uninstall.App, focused bool, width int) string {
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
-	mark := " · "
+	mark := "[-]"
 	if !app.Protected {
 		mark = "[ ]"
 		if state.selectedApps[app.Path] {
@@ -224,7 +224,7 @@ func (state *tuiState) statusRows() []statusRow {
 func (state *tuiState) statusMetricLine(row statusRow, focused bool, width int) string {
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
 	line := fmt.Sprintf("%s %-14s %12s  %s", cursor, row.name, row.value, row.detail)
 	return state.paint(row.colour, text.Truncate(line, width))

@@ -435,6 +435,7 @@ type tuiState struct {
 	apps         []uninstall.App
 	selectedApps map[string]bool
 	status       metrics.Snapshot
+	statusEvery  time.Duration
 	tracker      *metrics.Tracker
 	localizer    *i18n.Localizer
 	opening      string
@@ -449,7 +450,11 @@ func (state *tuiState) t(key string) string {
 }
 
 func (state *tuiState) viewName() string {
-	return state.t("tui.view." + state.view.String())
+	return state.viewLabel(state.view)
+}
+
+func (state *tuiState) viewLabel(view tuiView) string {
+	return state.t("tui.view." + view.String())
 }
 
 func (state *tuiState) cursor() int {
@@ -506,6 +511,7 @@ func Run(ctx context.Context, home string, identity *storage.CommandIdentity, fu
 		apps:         uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: options.Rootful, Identity: identity}),
 		selectedApps: make(map[string]bool),
 		status:       tracker.Observe(metrics.Collect(ctx)),
+		statusEvery:  options.StatusInterval,
 		tracker:      tracker,
 		localizer:    i18n.FromContext(ctx),
 		opening:      options.View,
@@ -792,11 +798,11 @@ func (state *tuiState) render(renderer *screenRenderer) {
 		lines = append(lines, "")
 	}
 	if inspectorLines > 0 {
-		lines = append(lines, state.paint(colorFog, strings.Repeat("─", width)))
+		lines = append(lines, state.inspectorRule(width))
 		lines = append(lines, state.inspectorLines(width, inspectorLines)...)
 	}
 	lines = append(lines, state.statusLine(width))
-	lines = append(lines, state.paint(colorFog, text.Truncate(keyGuide(width, state.view), width)))
+	lines = append(lines, state.keyGuide(width))
 	if len(lines) > height {
 		lines = lines[:height]
 	}
@@ -813,7 +819,14 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	if state.rootful {
 		scope = state.t("tui.scope.root")
 	}
-	lines := []string{state.bold(colorCyan, headerText(title, state.viewName()+" / "+scope, width))}
+	right := scope
+	if !full {
+		right = state.viewName() + " / " + scope
+	}
+	lines := []string{state.bold(colorCyan, headerText(title, right, width))}
+	if full {
+		lines = append(lines, state.navigationLine(width))
+	}
 
 	chosen := scan.SelectedItems(state.report, state.selected)
 	direct, toTrash, _ := scan.SelectionTotals(chosen)
@@ -844,7 +857,11 @@ func (state *tuiState) headerLines(width int, full bool) []string {
 	case viewApps:
 		lines = append(lines, state.appTableHeader(width))
 	case viewStatus:
-		lines = append(lines, state.paint(colorFog, text.Truncate("live sample, refreshed every 2s", width)))
+		interval := state.statusEvery
+		if interval <= 0 {
+			interval = 2 * time.Second
+		}
+		lines = append(lines, state.paint(colorFog, text.Truncate("live sample, refreshed every "+text.Duration(interval), width)))
 	}
 	return lines
 }
@@ -1199,7 +1216,7 @@ func (state *tuiState) tableHeader(width int) string {
 	if width >= 80 {
 		categoryWidth = 20
 	}
-	header := "      " + text.PadRight("category", categoryWidth) + " " + text.PadLeft("size", 9) + "  item"
+	header := "      " + text.PadRight("risk", 11) + " " + text.PadRight("category", categoryWidth) + " " + text.PadLeft("size", 9) + "  item"
 	return state.paint(colorFog, text.Truncate(header, width))
 }
 
@@ -1209,7 +1226,7 @@ func (state *tuiState) itemLine(item scan.Item, focused bool, width int) string 
 	}
 	cursor := " "
 	if focused {
-		cursor = state.paint(colorCyan, "›")
+		cursor = state.paint(colorCyan, "┃")
 	}
 	mark := " · "
 	if item.Selectable() {
@@ -1230,12 +1247,13 @@ func (state *tuiState) itemLine(item scan.Item, focused bool, width int) string 
 	if width >= 80 {
 		categoryWidth = 20
 	}
-	badge := state.paint(riskColor(item.Risk), text.PadRight(text.Truncate(storage.DisplayCategory(item.Category), categoryWidth), categoryWidth))
-	nameWidth := width - categoryWidth - 18
+	risk := state.paint(riskColor(item.Risk), text.PadRight(string(item.Risk), 11))
+	category := state.paint(colorFog, text.PadRight(text.Truncate(storage.DisplayCategory(item.Category), categoryWidth), categoryWidth))
+	nameWidth := width - categoryWidth - 30
 	if nameWidth < 1 {
 		nameWidth = 1
 	}
-	return cursor + " " + mark + " " + badge + " " + size + "  " + text.Truncate(text.Clean(item.Name), nameWidth)
+	return cursor + " " + mark + " " + risk + " " + category + " " + size + "  " + text.Truncate(text.Clean(item.Name), nameWidth)
 }
 
 func (state *tuiState) inspector(width, lineCount int) []string {
@@ -1394,51 +1412,141 @@ func (state *tuiState) showDetails(renderer *screenRenderer) {
 }
 
 func (state *tuiState) showHelp(renderer *screenRenderer) {
-	height, width := renderer.Size()
-	// The help is generated from the live keymap. A hardcoded list tells a user
-	// who rebound something to press a key that does nothing.
-	plain := []string{"keymap: " + state.keys.Name(), ""}
-	for _, action := range state.keys.Actions(keymap.Normal) {
-		keys := strings.Join(state.keys.Keys(keymap.Normal, action), "  ")
-		plain = append(plain, fmt.Sprintf("%-14s %s", keys, keymap.Describe[action]))
+	content := state.helpContent()
+	offset := 0
+	pending := ""
+	for {
+		height, width := renderer.Size()
+		renderer.Render(state.helpFrame(width, height, offset, content))
+		key, err := readKey()
+		if err != nil {
+			break
+		}
+		action, more := state.keys.Lookup(keymap.Normal, pending, key)
+		if more {
+			pending += key
+			continue
+		}
+		pending = ""
+		step := max((height-2)/2, 1)
+		switch action {
+		case keymap.Up:
+			offset--
+		case keymap.Down:
+			offset++
+		case keymap.HalfPageUp:
+			offset -= step
+		case keymap.HalfPageDown:
+			offset += step
+		case keymap.Top:
+			offset = 0
+		case keymap.Bottom:
+			offset = len(content)
+		default:
+			renderer.Invalidate()
+			return
+		}
+	}
+	renderer.Invalidate()
+}
+
+func (state *tuiState) helpContent() []string {
+	type actionGroup struct {
+		name    string
+		actions []keymap.Action
+	}
+	groups := []actionGroup{
+		{name: "move", actions: []keymap.Action{keymap.Up, keymap.Down, keymap.Top, keymap.Bottom, keymap.HalfPageDown, keymap.HalfPageUp, keymap.Fold, keymap.Unfold}},
+		{name: "views", actions: []keymap.Action{keymap.NextView, keymap.ViewSurface, keymap.ViewActions, keymap.ViewApps, keymap.ViewHealth, keymap.ViewStatus, keymap.NextFilter}},
+		{name: "act", actions: []keymap.Action{keymap.Toggle, keymap.ToggleSafe, keymap.Mark, keymap.ClearMarks, keymap.Execute, keymap.ExecuteMarks, keymap.Details}},
+		{name: "session", actions: []keymap.Action{keymap.Visual, keymap.Command, keymap.Rescan, keymap.Help, keymap.Confirm, keymap.Escape, keymap.Quit}},
+	}
+	var lines []string
+	for _, group := range groups {
+		var entries []string
+		for _, action := range group.actions {
+			keys := state.keys.Keys(keymap.Normal, action)
+			if len(keys) == 0 {
+				continue
+			}
+			entries = append(entries, fmt.Sprintf("  %-14s %s", strings.Join(keys, "  "), keymap.Describe[action]))
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, group.name)
+		lines = append(lines, entries...)
 	}
 	if state.keys.Modal() {
-		plain = append(plain, "", "visual mode")
+		lines = append(lines, "", "visual mode")
 		for _, action := range state.keys.Actions(keymap.Visual_) {
 			keys := strings.Join(state.keys.Keys(keymap.Visual_, action), "  ")
-			plain = append(plain, fmt.Sprintf("%-14s %s over the selected rows", keys, keymap.Describe[action]))
+			lines = append(lines, fmt.Sprintf("  %-14s %s over the selected rows", keys, keymap.Describe[action]))
 		}
-		plain = append(plain, "", "command line", ":surface :actions :apps :health :status :clear :marks :q")
+		lines = append(lines, "", "command line", "  :surface :actions :apps :health :status :clear :marks :q")
 	}
-	plain = append(plain,
+	lines = append(lines,
 		"",
-		"safe         supported command or proven evidence",
-		"review       explicit mark",
-		"destructive  exact confirmation",
-		"protected    read-only",
+		"safety",
+		"  safe         supported command or proven evidence",
+		"  review       explicit mark",
+		"  destructive  exact confirmation",
+		"  protected    read-only",
 		"",
-		"every level sums to its parent, remainders and unreadable trees included",
-		"bindings live in "+state.configPath,
+		"accounting",
+		"  every level sums to its parent, remainders and unreadable trees included",
+		"  bindings live in "+state.configPath,
 	)
+	return lines
+}
 
-	lines := make([]string, 0, height)
-	for index, line := range plain {
+func (state *tuiState) helpFrame(width, height, offset int, content []string) []string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	bodyRows := max(height-2, 0)
+	maxOffset := max(len(content)-bodyRows, 0)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	end := min(offset+bodyRows, len(content))
+
+	lines := []string{state.bold(colorCyan, text.Truncate("keys / "+state.keys.Name(), width))}
+	for _, line := range content[offset:end] {
 		line = text.Truncate(line, width)
-		if index == 0 {
-			line = state.bold(colorCyan, line)
+		if line != "" && !strings.HasPrefix(line, "  ") {
+			line = state.bold(colorInk, line)
 		}
 		lines = append(lines, line)
-	}
-	if len(lines) > height-1 {
-		lines = lines[:height-1]
 	}
 	for len(lines) < height-1 {
 		lines = append(lines, "")
 	}
-	lines = append(lines, state.paint(colorFog, text.Truncate("any key: return", width)))
-	renderer.Render(lines)
-	_, _ = readKey()
-	renderer.Invalidate()
+	if height > 1 {
+		position := "0/0"
+		if len(content) > 0 {
+			position = fmt.Sprintf("%d-%d/%d", offset+1, end, len(content))
+		}
+		hint := state.pairedHint(keymap.Down, keymap.Up, "scroll")
+		left := "other key close"
+		if hint.key != "" && bodyRows < len(content) {
+			left = hint.key + " scroll  " + left
+		}
+		lines = append(lines, state.paint(colorFog, text.JoinEdges(left, position, width)))
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return lines
 }
 
 func confirmInteractive(items []scan.Item, out io.Writer) (bool, error) {
@@ -1566,40 +1674,6 @@ func spaceLabel(freePercent float64) string {
 	default:
 		return fmt.Sprintf("healthy  free=%.1f%%", freePercent)
 	}
-}
-
-func keyGuide(width int, view tuiView) string {
-	if view == viewSurface {
-		if width >= 100 {
-			return "jk move  hl fold  v view  1 surface 2 actions 3 apps 4 health 5 status  r scan  ? keys  q quit"
-		}
-		if width >= 72 {
-			return "jk move  hl fold  v view  r scan  ? keys  q quit"
-		}
-		return "jk move  hl fold  v view  q quit"
-	}
-	if view == viewHealth {
-		if width >= 72 {
-			return "jk move  v view  r scan  ? keys  q quit"
-		}
-		return "jk move  v view  q quit"
-	}
-	if view == viewApps {
-		if width >= 72 {
-			return "jk move  space mark  c uninstall  v view  r scan  ? keys  q quit"
-		}
-		return "jk move  space mark  c uninstall  q quit"
-	}
-	if view == viewStatus {
-		return "jk move  v view  r sample  ? keys  q quit"
-	}
-	if width >= 100 {
-		return "jk move  tab risk  space mark  a safe  enter inspect  c execute  v view  r scan  q quit"
-	}
-	if width >= 72 {
-		return "jk move  tab risk  space mark  enter inspect  c execute  v view  q quit"
-	}
-	return "jk move  tab risk  space mark  c run  q quit"
 }
 
 func surfaceRoot(report scan.Report) *scan.SurfaceNode {

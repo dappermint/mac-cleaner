@@ -6,9 +6,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/dappermint/ratatouille/internal/keymap"
 	"github.com/dappermint/ratatouille/internal/scan"
 	"github.com/dappermint/ratatouille/internal/storage"
-	"github.com/dappermint/ratatouille/internal/text"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
@@ -68,6 +68,7 @@ func TestEveryViewRendersAFullFrame(t *testing.T) {
 				expanded: defaultExpansion(report.Surface.Root, report.Disk.Path, 2),
 				view:     view,
 				color:    false,
+				keys:     keymap.Default(),
 			}
 			var sink strings.Builder
 			renderer := &screenRenderer{out: &sink, height: height, width: width, active: true}
@@ -102,6 +103,7 @@ func TestSurfaceViewShowsTheUnaccountedRow(t *testing.T) {
 		expanded: defaultExpansion(report.Surface.Root, report.Disk.Path, 2),
 		view:     viewSurface,
 		color:    false,
+		keys:     keymap.Default(),
 	}
 	var sink strings.Builder
 	renderer := &screenRenderer{out: &sink, height: 30, width: 100, active: true}
@@ -114,12 +116,60 @@ func TestSurfaceViewShowsTheUnaccountedRow(t *testing.T) {
 	}
 }
 
-func TestKeyGuideNeverOverflows(t *testing.T) {
-	for _, view := range tuiViewOrder {
-		for width := 20; width <= 140; width += 7 {
-			if guide := keyGuide(width, view); visibleWidth(text.Truncate(guide, width)) > width {
-				t.Fatalf("view %s guide overflows at width %d", view, width)
+func TestNavigationAndKeyGuideNeverOverflow(t *testing.T) {
+	for _, keys := range []*keymap.Map{keymap.Default(), keymap.Vim()} {
+		for _, view := range tuiViewOrder {
+			state := tuiState{view: view, keys: keys, report: sampleReport()}
+			for width := 1; width <= 140; width++ {
+				if guide := state.keyGuide(width); visibleWidth(guide) > width {
+					t.Fatalf("%s %s guide overflows at width %d", keys.Name(), view, width)
+				}
+				if navigation := state.navigationLine(width); visibleWidth(navigation) > width {
+					t.Fatalf("%s %s navigation overflows at width %d", keys.Name(), view, width)
+				}
 			}
 		}
+	}
+}
+
+func TestChromeUsesTheLiveKeymap(t *testing.T) {
+	report := sampleReport()
+	state := tuiState{
+		view:     viewSurface,
+		keys:     keymap.Vim(),
+		report:   report,
+		expanded: defaultExpansion(report.Surface.Root, report.Disk.Path, 2),
+	}
+	guide := ansiPattern.ReplaceAllString(state.keyGuide(120), "")
+	navigation := ansiPattern.ReplaceAllString(state.navigationLine(120), "")
+	if !strings.Contains(guide, "ctrl-w view") || strings.Contains(guide, "v view") {
+		t.Fatalf("vim guide does not reflect the live next-view binding: %q", guide)
+	}
+	if !strings.Contains(navigation, "[1 surface]") || !strings.HasSuffix(navigation, state.positionLabel()) {
+		t.Fatalf("navigation lacks active view or row position: %q", navigation)
+	}
+}
+
+func TestActionsShowRiskWithoutColour(t *testing.T) {
+	state := tuiState{report: sampleReport(), selected: map[string]bool{}}
+	line := state.itemLine(state.report.Items[1], true, 100)
+	if !strings.Contains(line, "protected") || !strings.Contains(line, "┃") {
+		t.Fatalf("focused protected row lacks non-colour cues: %q", line)
+	}
+}
+
+func TestHelpIsGroupedAndScrollable(t *testing.T) {
+	state := tuiState{keys: keymap.Vim(), configPath: "/tmp/keys"}
+	content := state.helpContent()
+	if len(content) <= 10 {
+		t.Fatalf("help content is not long enough to exercise paging: %d", len(content))
+	}
+	first := strings.Join(state.helpFrame(80, 10, 0, content), "\n")
+	last := strings.Join(state.helpFrame(80, 10, len(content), content), "\n")
+	if !strings.Contains(first, "move") || !strings.Contains(first, "1-8/") {
+		t.Fatalf("first help page lacks grouping or position: %q", first)
+	}
+	if !strings.Contains(last, "bindings live in /tmp/keys") || !strings.Contains(last, "scroll") {
+		t.Fatalf("last help page lacks final guidance: %q", last)
 	}
 }
