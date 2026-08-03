@@ -44,6 +44,38 @@ func TestStatusScoreAndPressureColoursRunInOppositeDirections(t *testing.T) {
 	}
 }
 
+func TestOptionsValidateUserPreferences(t *testing.T) {
+	valid := Options{View: "status", Depth: 4, StatusInterval: 3 * time.Second}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid options: %v", err)
+	}
+	for _, options := range []Options{
+		{View: "unknown", Depth: 3, StatusInterval: time.Second},
+		{View: "surface", Depth: -1, StatusInterval: time.Second},
+		{View: "surface", Depth: 3},
+	} {
+		if err := options.Validate(); err == nil {
+			t.Errorf("invalid options were accepted: %+v", options)
+		}
+	}
+}
+
+func TestOpeningViewHonoursThePreference(t *testing.T) {
+	report := sampleReport()
+	for name, want := range map[string]tuiView{
+		"surface": viewSurface,
+		"actions": viewActions,
+		"apps":    viewApps,
+		"health":  viewHealth,
+		"status":  viewStatus,
+	} {
+		state := tuiState{report: report, opening: name}
+		if got := state.openingView(); got != want {
+			t.Errorf("opening view %q = %s, want %s", name, got, want)
+		}
+	}
+}
+
 func TestTUIFiltersKeepCursorOnVisibleItems(t *testing.T) {
 	state := tuiState{
 		report: scan.Report{Items: []scan.Item{

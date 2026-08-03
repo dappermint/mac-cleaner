@@ -39,7 +39,7 @@ func surfaceRows(root *scan.SurfaceNode, expanded map[string]bool) []surfaceRow 
 	return rows
 }
 
-func defaultExpansion(root *scan.SurfaceNode, dataPath string) map[string]bool {
+func defaultExpansion(root *scan.SurfaceNode, dataPath string, depth int) map[string]bool {
 	expanded := make(map[string]bool)
 	if root == nil {
 		return expanded
@@ -58,7 +58,7 @@ func defaultExpansion(root *scan.SurfaceNode, dataPath string) map[string]bool {
 			key := containerKey + "/" + volume.Name
 			expanded[key] = true
 			node := volume
-			for level := 0; level < 2; level++ {
+			for level := 0; level < depth; level++ {
 				largest := largestChild(node)
 				if largest == nil {
 					break

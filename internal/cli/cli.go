@@ -77,7 +77,14 @@ func Run(ctx context.Context, version string, args []string, in io.Reader, out, 
 		if keyErr != nil {
 			return keyErr
 		}
-		return tui.Run(ctx, home, rootful, identity, safety.NewFunnel(home, identity, false, log), keys, config.Path(home, config.SettingsFile), out)
+		options := tui.Options{
+			Rootful:        rootful,
+			Colour:         preferences.UseColour(true),
+			View:           preferences.View,
+			Depth:          preferences.Depth,
+			StatusInterval: preferences.Interval,
+		}
+		return tui.Run(ctx, home, identity, safety.NewFunnel(home, identity, false, log), keys, config.Path(home, config.SettingsFile), options, out)
 	}
 
 	switch args[0] {

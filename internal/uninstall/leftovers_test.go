@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 func makeEntry(t *testing.T, path string) {
@@ -261,5 +263,43 @@ func TestFindRefusesToGuess(t *testing.T) {
 	}
 	if len(candidates) != 2 {
 		t.Errorf("got %d candidates, want both matches", len(candidates))
+	}
+}
+
+func TestFindRefusesDuplicateExactNames(t *testing.T) {
+	apps := []App{
+		{Name: "Example", Bundle: "com.example.local", Path: "/Applications/Example.app"},
+		{Name: "Example", Bundle: "com.example.user", Path: "/Users/someone/Applications/Example.app"},
+	}
+
+	if app, candidates := Find(apps, "Example"); app.Path != "" || len(candidates) != 2 {
+		t.Fatalf("duplicate exact name resolved to %+v with candidates %+v", app, candidates)
+	}
+	if app, candidates := Find(apps, "com.example.user"); app.Path != apps[1].Path || len(candidates) != 0 {
+		t.Fatalf("bundle selector resolved to %+v with candidates %+v", app, candidates)
+	}
+	if app, candidates := Find(apps, apps[0].Path); app.Path != apps[0].Path || len(candidates) != 0 {
+		t.Fatalf("path selector resolved to %+v with candidates %+v", app, candidates)
+	}
+}
+
+func TestFindRefusesDuplicateBundleCopies(t *testing.T) {
+	apps := []App{
+		{Name: "Example", Bundle: "com.example.app", Path: "/Applications/Example.app"},
+		{Name: "Example Copy", Bundle: "com.example.app", Path: "/Users/someone/Applications/Example.app"},
+	}
+
+	if app, candidates := Find(apps, "com.example.app"); app.Path != "" || len(candidates) != 2 {
+		t.Fatalf("duplicate bundle resolved to %+v with candidates %+v", app, candidates)
+	}
+}
+
+func TestServiceDomainUsesTheInvokingUser(t *testing.T) {
+	identity := &storage.CommandIdentity{UID: 501}
+	if domain, commandIdentity := serviceDomain("launch agent", identity); domain != "gui/501" || commandIdentity != identity {
+		t.Fatalf("launch agent domain = %q identity=%p", domain, commandIdentity)
+	}
+	if domain, commandIdentity := serviceDomain("launch daemon", identity); domain != "system" || commandIdentity != nil {
+		t.Fatalf("launch daemon domain = %q identity=%p", domain, commandIdentity)
 	}
 }

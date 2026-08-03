@@ -169,15 +169,15 @@ func (state *tuiState) runCommand(command string) (bool, bool) {
 	switch command {
 	case "", "q", "quit":
 		return false, command != ""
-	case "surface", "1":
+	case viewNameSurface, "1":
 		state.view = viewSurface
-	case "actions", "2":
+	case viewNameActions, "2":
 		state.view = viewActions
-	case "apps", "3":
+	case viewNameApps, "3":
 		state.view = viewApps
-	case "health", "4":
+	case viewNameHealth, "4":
 		state.view = viewHealth
-	case "status", "5":
+	case viewNameStatus, "5":
 		state.view = viewStatus
 	case "clear":
 		state.clearMarks()

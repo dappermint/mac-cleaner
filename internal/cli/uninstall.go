@@ -52,7 +52,7 @@ func runUninstallCommand(ctx context.Context, home string, rootful bool, identit
 	results := make([]uninstall.Result, 0, len(selected))
 	for _, app := range selected {
 		fmt.Fprintf(out, "\n%s %s\n", app.Name, app.Version)
-		if cask := uninstall.BrewCask(ctx, app); cask != "" {
+		if cask := uninstall.BrewCask(ctx, app, identity); cask != "" {
 			fmt.Fprintf(out, "  Homebrew cask %q owns this application\n", cask)
 			if err := uninstall.BrewUninstall(ctx, funnel, cask, out); err != nil {
 				return fmt.Errorf("uninstalling Homebrew cask %s: %w", cask, err)
@@ -81,9 +81,9 @@ func resolveApps(apps []uninstall.App, queries []string) ([]uninstall.App, error
 			}
 			names := make([]string, 0, len(candidates))
 			for _, candidate := range candidates {
-				names = append(names, candidate.Name)
+				names = append(names, fmt.Sprintf("%s (%s)", candidate.Name, candidate.Path))
 			}
-			return nil, fmt.Errorf("%q matches %s, name one exactly", query, strings.Join(names, ", "))
+			return nil, fmt.Errorf("%q matches %s, use a bundle id or absolute path", query, strings.Join(names, ", "))
 		}
 		selected = append(selected, app)
 	}

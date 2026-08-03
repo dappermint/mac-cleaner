@@ -280,7 +280,7 @@ func (s Scanner) Scan(ctx context.Context) Report {
 	report.Sort()
 	report.Insights = buildInsights(ctx, report, previous)
 	if s.Surface {
-		if err := saveCachedReport(report); err != nil {
+		if err := saveCachedReport(report, s.CommandIdentity); err != nil {
 			report.Issues = append(report.Issues, "surface cache: "+err.Error())
 		}
 	}

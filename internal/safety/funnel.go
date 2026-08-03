@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/dappermint/ratatouille/internal/config"
 	"github.com/dappermint/ratatouille/internal/storage"
 )
 
@@ -67,7 +68,7 @@ func (f *Funnel) Identity() *storage.CommandIdentity {
 // permanent removal.
 func (f *Funnel) Trash(ctx context.Context, request Request) (Result, error) {
 	result := Result{Path: request.Path, Bytes: request.Bytes, Recovery: RecoveryTrash, DryRun: f.dryRun}
-	if err := ValidateForDeletion(request.Path); err != nil {
+	if err := f.validate(request); err != nil {
 		return f.finish(request, KindTrash, result, err)
 	}
 	if _, err := os.Lstat(request.Path); err != nil {
@@ -94,7 +95,7 @@ func (f *Funnel) Trash(ctx context.Context, request Request) (Result, error) {
 // rebuildable or when the user asked for it in as many words.
 func (f *Funnel) Remove(ctx context.Context, request Request) (Result, error) {
 	result := Result{Path: request.Path, Bytes: request.Bytes, Recovery: RecoveryPermanent, DryRun: f.dryRun}
-	if err := ValidateForDeletion(request.Path); err != nil {
+	if err := f.validate(request); err != nil {
 		return f.finish(request, KindRemove, result, err)
 	}
 	if _, err := os.Lstat(request.Path); err != nil {
@@ -113,6 +114,9 @@ func (f *Funnel) EmptyTrash(ctx context.Context, request Request) (Result, error
 	result := Result{Path: trash, Bytes: request.Bytes, Recovery: RecoveryPermanent, DryRun: f.dryRun}
 	request.Path = trash
 
+	if err := f.validate(request); err != nil {
+		return f.finish(request, KindEmptyTrash, result, err)
+	}
 	if err := validateTrashRoot(f.home, trash); err != nil {
 		return f.finish(request, KindEmptyTrash, result, err)
 	}
@@ -139,6 +143,17 @@ func (f *Funnel) EmptyTrash(ctx context.Context, request Request) (Result, error
 		}
 	}
 	return f.finish(request, KindEmptyTrash, result, nil)
+}
+
+func (f *Funnel) validate(request Request) error {
+	whitelist, err := config.LoadWhitelist(f.home, config.WhitelistFile)
+	if err != nil {
+		return refuse(request.Path, "the whitelist could not be read: "+storage.CompactError(err))
+	}
+	if whitelist.Blocks(request.Item, request.Path) {
+		return refuse(request.Path, "protected by the whitelist")
+	}
+	return ValidateForDeletion(request.Path)
 }
 
 // RecordCommand logs a cleanup that a tool performed through its own command,

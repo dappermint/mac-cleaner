@@ -51,8 +51,8 @@ type App struct {
 	Executable string    `json:"-"`
 }
 
-// Selector is the exact string `uninstall` accepts for this app. Ambiguity is
-// an error rather than a guess, so the selector is what --list prints.
+// Selector is the shortest string `uninstall` accepts for this app when it is
+// unambiguous. Find also accepts the bundle id and absolute path.
 func (a App) Selector() string {
 	return a.Name
 }
@@ -205,14 +205,24 @@ func size(ctx context.Context, apps []App) {
 // as a list of candidates rather than resolved by picking one.
 func Find(apps []App, query string) (App, []App) {
 	wanted := normalize(query)
+	wantedPath := filepath.Clean(strings.TrimSpace(query))
+	var exact []App
 	var partial []App
 	for _, app := range apps {
 		switch {
-		case normalize(app.Name) == wanted, normalize(app.Bundle) == wanted:
+		case filepath.IsAbs(wantedPath) && filepath.Clean(app.Path) == wantedPath:
 			return app, nil
+		case normalize(app.Name) == wanted, normalize(app.Bundle) == wanted:
+			exact = append(exact, app)
 		case strings.Contains(normalize(app.Name), wanted):
 			partial = append(partial, app)
 		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(exact) > 1 {
+		return App{}, exact
 	}
 	if len(partial) == 1 {
 		return partial[0], nil

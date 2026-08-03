@@ -65,7 +65,7 @@ func TestEveryViewRendersAFullFrame(t *testing.T) {
 			state := tuiState{
 				report:   report,
 				selected: map[string]bool{},
-				expanded: defaultExpansion(report.Surface.Root, report.Disk.Path),
+				expanded: defaultExpansion(report.Surface.Root, report.Disk.Path, 2),
 				view:     view,
 				color:    false,
 			}
@@ -99,7 +99,7 @@ func TestSurfaceViewShowsTheUnaccountedRow(t *testing.T) {
 	state := tuiState{
 		report:   report,
 		selected: map[string]bool{},
-		expanded: defaultExpansion(report.Surface.Root, report.Disk.Path),
+		expanded: defaultExpansion(report.Surface.Root, report.Disk.Path, 2),
 		view:     viewSurface,
 		color:    false,
 	}

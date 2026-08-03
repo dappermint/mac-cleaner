@@ -70,12 +70,12 @@ func LoadCachedReport(home string, rootful bool) (Report, error) {
 	return cached.Report, nil
 }
 
-func saveCachedReport(report Report) error {
+func saveCachedReport(report Report, identity *storage.CommandIdentity) error {
 	if report.Surface == nil || report.Home == "" {
 		return nil
 	}
 	path := SurfaceCachePath(report.Home)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := ensureCacheDirectory(filepath.Dir(path), identity); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".surface-v2-*.tmp")
@@ -84,6 +84,12 @@ func saveCachedReport(report Report) error {
 	}
 	temporary := file.Name()
 	defer func() { _ = os.Remove(temporary) }() //nolint:forbidigo // this is a private temp file created above
+	if identity != nil {
+		if err := os.Chown(temporary, int(identity.UID), int(identity.GID)); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
 	encoder := json.NewEncoder(file)
 	if err := encoder.Encode(cachedReport{Schema: surfaceCacheSchema, SavedAt: time.Now(), Report: report}); err != nil {
 		_ = file.Close()
@@ -97,6 +103,34 @@ func saveCachedReport(report Report) error {
 		return err
 	}
 	return os.Rename(temporary, path) //nolint:forbidigo // atomically replaces only this package's cache file
+}
+
+func ensureCacheDirectory(directory string, identity *storage.CommandIdentity) error {
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
+	if identity == nil || identity.Home == "" {
+		return nil
+	}
+	home := filepath.Clean(identity.Home)
+	relative, err := filepath.Rel(home, filepath.Clean(directory))
+	if err != nil {
+		return err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	current := home
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		if err := os.Lchown(current, int(identity.UID), int(identity.GID)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func buildInsights(ctx context.Context, current Report, previous *Report) []Insight {

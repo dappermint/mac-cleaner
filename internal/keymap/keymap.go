@@ -340,6 +340,10 @@ func Load(settings *config.Settings) (*Map, error) {
 			m.bind(mode, action, settings.List(key)...)
 		}
 	}
+	m.rebuildPrefixes()
+	if ambiguous := m.Ambiguous(); len(ambiguous) > 0 {
+		return nil, fmt.Errorf("ambiguous key bindings: %s", strings.Join(ambiguous, ", "))
+	}
 	return m, nil
 }
 
@@ -347,6 +351,20 @@ func clear(m *Map, mode Mode, action Action) {
 	for key, bound := range m.bindings[mode] {
 		if bound == action {
 			delete(m.bindings[mode], key)
+		}
+	}
+}
+
+func (m *Map) rebuildPrefixes() {
+	m.prefixes = map[Mode]map[string]bool{Normal: {}, Visual_: {}, Cmdline: {}}
+	for mode, bindings := range m.bindings {
+		for key := range bindings {
+			if !isChord(key) {
+				continue
+			}
+			for length := 1; length < len(key); length++ {
+				m.prefixes[mode][key[:length]] = true
+			}
 		}
 	}
 }

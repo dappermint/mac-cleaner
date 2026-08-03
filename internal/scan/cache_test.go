@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dappermint/ratatouille/internal/config"
+	"github.com/dappermint/ratatouille/internal/storage"
 )
 
 func TestSurfaceCacheRoundTripIsScoped(t *testing.T) {
@@ -17,7 +18,7 @@ func TestSurfaceCacheRoundTripIsScoped(t *testing.T) {
 		GeneratedAt: time.Now(), Home: home,
 		Surface: &Surface{Root: &SurfaceNode{Name: "home", Path: home, Bytes: 1024}, WalkedAt: time.Now()},
 	}
-	if err := saveCachedReport(report); err != nil {
+	if err := saveCachedReport(report, nil); err != nil {
 		t.Fatal(err)
 	}
 	cached, err := LoadCachedReport(home, false)
@@ -29,6 +30,28 @@ func TestSurfaceCacheRoundTripIsScoped(t *testing.T) {
 	}
 	if _, err := LoadCachedReport(home, true); err == nil {
 		t.Fatal("user cache was reused for a root scan")
+	}
+}
+
+func TestSurfaceCacheUsesTheInvokingUserIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvDir, filepath.Join(home, ".config", "ratatouille"))
+	identity := &storage.CommandIdentity{UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: home}
+	report := Report{
+		GeneratedAt: time.Now(), Home: home, Rootful: true,
+		Surface: &Surface{Root: &SurfaceNode{Name: "home", Path: home, Bytes: 1024}, WalkedAt: time.Now()},
+	}
+	if err := saveCachedReport(report, identity); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(home, ".config"), filepath.Join(home, ".config", "ratatouille"), SurfaceCachePath(home)} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if owner, ok := storage.FileOwner(info); !ok || owner != identity.UID {
+			t.Errorf("%s owner = %d, known=%v", path, owner, ok)
+		}
 	}
 }
 

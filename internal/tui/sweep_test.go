@@ -45,7 +45,7 @@ func TestEveryViewSurvivesEveryTerminalSize(t *testing.T) {
 				state := tuiState{
 					report:   report,
 					selected: map[string]bool{},
-					expanded: defaultExpansion(surfaceRoot(report), report.Disk.Path),
+					expanded: defaultExpansion(surfaceRoot(report), report.Disk.Path, 2),
 					view:     view,
 					color:    true,
 				}

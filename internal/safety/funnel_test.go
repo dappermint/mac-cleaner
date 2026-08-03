@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dappermint/ratatouille/internal/config"
 )
 
 func newTestFunnel(t *testing.T, dryRun bool) (*Funnel, string, *Log) {
@@ -61,6 +63,47 @@ func TestTrashRefusesABareRoot(t *testing.T) {
 	_, err := funnel.Trash(context.Background(), Request{Command: "clean", Path: "/Users/someone/Library"})
 	if !Refused(err) {
 		t.Fatalf("expected a refusal, got %v", err)
+	}
+}
+
+func TestFunnelRefusesAWhitelistedPath(t *testing.T) {
+	t.Setenv(EnvNoAuth, "1")
+	t.Setenv(EnvDryRun, "")
+	home := filepath.Join(t.TempDir(), "home")
+	source := filepath.Join(home, "Library", "Caches", "com.example")
+	writeTree(t, source, "blob")
+	configDir := filepath.Join(home, ".config", "ratatouille")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, config.WhitelistFile), []byte(source+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	funnel := NewFunnel(home, nil, false, OpenLog(home, nil))
+	if _, err := funnel.Trash(context.Background(), Request{Command: "clean", Item: "explorer-selection", Path: source}); !Refused(err) {
+		t.Fatalf("expected a whitelist refusal, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "blob")); err != nil {
+		t.Errorf("the whitelisted path was changed: %v", err)
+	}
+}
+
+func TestFunnelFailsClosedWhenWhitelistCannotBeRead(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	source := filepath.Join(home, "Library", "Caches", "com.example")
+	writeTree(t, source, "blob")
+	whitelist := filepath.Join(home, ".config", "ratatouille", config.WhitelistFile)
+	if err := os.MkdirAll(whitelist, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	funnel := NewFunnel(home, nil, false, OpenLog(home, nil))
+	if _, err := funnel.Remove(context.Background(), Request{Command: "clean", Path: source}); !Refused(err) {
+		t.Fatalf("expected an unreadable-whitelist refusal, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "blob")); err != nil {
+		t.Errorf("the path changed after a whitelist error: %v", err)
 	}
 }
 

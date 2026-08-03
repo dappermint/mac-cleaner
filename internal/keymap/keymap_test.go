@@ -186,6 +186,25 @@ func TestOverrideCanTargetAMode(t *testing.T) {
 	}
 }
 
+func TestOverrideRemovesStaleChordPrefixes(t *testing.T) {
+	m, err := Load(settings(t, "keymap = vim\n[keys]\ntop = t\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if action, more := m.Lookup(Normal, "", "g"); action != None || more {
+		t.Errorf("removed gg binding left g pending: action=%q pending=%v", action, more)
+	}
+	if got := lookup(t, m, Normal, "t"); got != Top {
+		t.Errorf("t = %q, want top", got)
+	}
+}
+
+func TestOverrideRejectsBindingThatShadowsAChord(t *testing.T) {
+	if _, err := Load(settings(t, "keymap = vim\n[keys]\nquit = g\n")); err == nil {
+		t.Fatal("a binding that makes gg unreachable was accepted")
+	}
+}
+
 func TestUnknownKeymapIsAnError(t *testing.T) {
 	if _, err := Load(settings(t, "keymap = dvorak\n")); err == nil {
 		t.Error("an unknown keymap name was accepted")

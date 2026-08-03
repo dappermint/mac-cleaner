@@ -92,6 +92,7 @@ type launchState struct {
 	disk      storage.Disk
 	color     bool
 	rootful   bool
+	depth     int
 	cached    *scan.Report
 	localizer *i18n.Localizer
 }
@@ -100,7 +101,7 @@ func tuiScanOptions(rootful bool) scan.Options {
 	return scan.Options{Deep: true, Rootful: rootful, Surface: true, MinFileBytes: 512 * 1024 * 1024, LargeFileLimit: 100}
 }
 
-func scanWithLaunch(ctx context.Context, home string, options scan.Options, identity *storage.CommandIdentity, renderer *screenRenderer, resize <-chan os.Signal, label string) (scan.Report, error) {
+func scanWithLaunch(ctx context.Context, home string, options scan.Options, identity *storage.CommandIdentity, renderer *screenRenderer, resize <-chan os.Signal, label string, colour bool, depth int) (scan.Report, error) {
 	updates := make(chan scan.ScanProgress, 64)
 	reports := make(chan scan.Report, 1)
 	scanner := scan.Configure(home, options, identity)
@@ -114,8 +115,9 @@ func scanWithLaunch(ctx context.Context, home string, options scan.Options, iden
 		label:     label,
 		started:   time.Now(),
 		stages:    make(map[string]scan.ScanProgress),
-		color:     os.Getenv("NO_COLOR") == "",
+		color:     colour,
 		rootful:   options.Rootful,
+		depth:     depth,
 		localizer: i18n.FromContext(ctx),
 	}
 	if cached, err := scan.LoadCachedReport(home, options.Rootful); err == nil {
@@ -221,7 +223,7 @@ func (state *launchState) render(renderer *screenRenderer) {
 		age := time.Since(state.cached.GeneratedAt)
 		lines = append(lines, state.paint(colorFog, text.Truncate(state.localizer.T("tui.launch.cached", text.Duration(age)), width)))
 		preview := tuiState{
-			report: *state.cached, expanded: defaultExpansion(surfaceRoot(*state.cached), state.cached.Disk.Path), color: state.color, localizer: state.localizer,
+			report: *state.cached, expanded: defaultExpansion(surfaceRoot(*state.cached), state.cached.Disk.Path, state.depth), color: state.color, localizer: state.localizer,
 		}
 		rows := preview.surfaceRows()
 		limit := min(len(rows), min(6, height-len(lines)-3))
@@ -363,20 +365,51 @@ const (
 	viewStatus
 )
 
+const (
+	viewNameSurface = "surface"
+	viewNameActions = "actions"
+	viewNameApps    = "apps"
+	viewNameHealth  = "health"
+	viewNameStatus  = "status"
+)
+
 var tuiViewOrder = []tuiView{viewSurface, viewActions, viewApps, viewHealth, viewStatus}
+
+type Options struct {
+	Rootful        bool
+	Colour         bool
+	View           string
+	Depth          int
+	StatusInterval time.Duration
+}
+
+func (options Options) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(options.View)) {
+	case "", "auto", viewNameSurface, viewNameActions, viewNameApps, viewNameHealth, viewNameStatus:
+	default:
+		return fmt.Errorf("unknown opening view %q", options.View)
+	}
+	if options.Depth < 0 || options.Depth > 8 {
+		return fmt.Errorf("surface depth must be between 0 and 8, got %d", options.Depth)
+	}
+	if options.StatusInterval <= 0 {
+		return fmt.Errorf("status interval must be greater than zero, got %s", options.StatusInterval)
+	}
+	return nil
+}
 
 func (v tuiView) String() string {
 	switch v {
 	case viewSurface:
-		return "surface"
+		return viewNameSurface
 	case viewActions:
-		return "actions"
+		return viewNameActions
 	case viewApps:
-		return "apps"
+		return viewNameApps
 	case viewHealth:
-		return "health"
+		return viewNameHealth
 	default:
-		return "status"
+		return viewNameStatus
 	}
 }
 
@@ -404,6 +437,8 @@ type tuiState struct {
 	status       metrics.Snapshot
 	tracker      *metrics.Tracker
 	localizer    *i18n.Localizer
+	opening      string
+	depth        int
 }
 
 func (state *tuiState) t(key string) string {
@@ -433,7 +468,10 @@ func (state *tuiState) setOffset(value int) {
 	state.offsets[state.view] = value
 }
 
-func Run(ctx context.Context, home string, rootful bool, identity *storage.CommandIdentity, funnel *safety.Funnel, keys *keymap.Map, configPath string, out io.Writer) error {
+func Run(ctx context.Context, home string, identity *storage.CommandIdentity, funnel *safety.Funnel, keys *keymap.Map, configPath string, options Options, out io.Writer) error {
+	if err := options.Validate(); err != nil {
+		return err
+	}
 	renderer := newScreenRenderer(out)
 	renderer.Enter()
 	defer renderer.Exit()
@@ -441,7 +479,7 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 	signal.Notify(resize, syscall.SIGWINCH)
 	defer signal.Stop(resize)
 
-	report, err := scanWithLaunch(ctx, home, tuiScanOptions(rootful), identity, renderer, resize, "indexing storage")
+	report, err := scanWithLaunch(ctx, home, tuiScanOptions(options.Rootful), identity, renderer, resize, "indexing storage", options.Colour, options.Depth)
 	if err != nil {
 		return err
 	}
@@ -456,24 +494,26 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 	state := tuiState{
 		report:       report,
 		selected:     make(map[string]bool),
-		expanded:     defaultExpansion(surfaceRoot(report), report.Disk.Path),
+		expanded:     defaultExpansion(surfaceRoot(report), report.Disk.Path, options.Depth),
 		marked:       make(map[string]bool),
 		markedBytes:  make(map[string]int64),
 		keys:         keys,
 		configPath:   configPath,
 		mode:         keymap.Normal,
 		anchor:       -1,
-		color:        os.Getenv("NO_COLOR") == "",
-		rootful:      rootful,
-		apps:         uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity}),
+		color:        options.Colour,
+		rootful:      options.Rootful,
+		apps:         uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: options.Rootful, Identity: identity}),
 		selectedApps: make(map[string]bool),
 		status:       tracker.Observe(metrics.Collect(ctx)),
 		tracker:      tracker,
 		localizer:    i18n.FromContext(ctx),
+		opening:      options.View,
+		depth:        options.Depth,
 	}
 	state.view = state.openingView()
 	presses, resumeKeys := readKeyStream(ctx)
-	statusTicker := time.NewTicker(2 * time.Second)
+	statusTicker := time.NewTicker(options.StatusInterval)
 	defer statusTicker.Stop()
 
 	for {
@@ -588,7 +628,7 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				state.showHelp(renderer)
 			case keymap.Execute, keymap.ExecuteMarks:
 				if state.view == viewApps {
-					if err := state.executeApps(ctx, home, rootful, identity, funnel, terminal, renderer, out); err != nil {
+					if err := state.executeApps(ctx, home, options.Rootful, identity, funnel, terminal, renderer, out); err != nil {
 						return err
 					}
 					break
@@ -631,12 +671,12 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 				fmt.Fprint(out, "\nenter: rescan ")
 				_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 				renderer.Enter()
-				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(rootful), identity, renderer, resize, "indexing storage")
+				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(options.Rootful), identity, renderer, resize, "indexing storage", options.Colour, options.Depth)
 				if scanErr != nil {
 					return scanErr
 				}
 				state.reset(report)
-				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
+				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: options.Rootful, Identity: identity})
 				if err := terminal.Enter(); err != nil {
 					return err
 				}
@@ -646,16 +686,16 @@ func Run(ctx context.Context, home string, rootful bool, identity *storage.Comma
 					break
 				}
 				if state.view == viewApps {
-					state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
+					state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: options.Rootful, Identity: identity})
 					break
 				}
 				terminal.Restore()
-				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(rootful), identity, renderer, resize, "indexing storage")
+				report, scanErr := scanWithLaunch(ctx, home, tuiScanOptions(options.Rootful), identity, renderer, resize, "indexing storage", options.Colour, options.Depth)
 				if scanErr != nil {
 					return scanErr
 				}
 				state.reset(report)
-				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: rootful, Identity: identity})
+				state.apps = uninstall.Inventory(ctx, uninstall.Env{Home: home, Rootful: options.Rootful, Identity: identity})
 				if err := terminal.Enter(); err != nil {
 					return err
 				}
@@ -705,7 +745,7 @@ func (state *tuiState) reset(report scan.Report) {
 	state.offsets = [5]int{}
 	state.filterIndex = 0
 	state.notice = ""
-	state.expanded = defaultExpansion(surfaceRoot(report), report.Disk.Path)
+	state.expanded = defaultExpansion(surfaceRoot(report), report.Disk.Path, state.depth)
 	state.clearMarks()
 	state.mode = keymap.Normal
 	state.pending = ""
@@ -1051,6 +1091,18 @@ func (state *tuiState) cycleView() {
 }
 
 func (state *tuiState) openingView() tuiView {
+	switch strings.ToLower(strings.TrimSpace(state.opening)) {
+	case viewNameSurface:
+		return viewSurface
+	case viewNameActions:
+		return viewActions
+	case viewNameApps:
+		return viewApps
+	case viewNameHealth:
+		return viewHealth
+	case viewNameStatus:
+		return viewStatus
+	}
 	if surfaceRoot(state.report) == nil {
 		return viewActions
 	}

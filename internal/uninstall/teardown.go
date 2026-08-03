@@ -55,7 +55,7 @@ func Run(ctx context.Context, funnel *safety.Funnel, env Env, app App, installed
 	result.Skipped = skipped
 
 	if !options.LeftoversOnly {
-		for _, note := range stopServices(ctx, app, leftovers, funnel.DryRun()) {
+		for _, note := range stopServices(ctx, app, leftovers, funnel.DryRun(), env.Identity) {
 			fmt.Fprintf(out, "  %s\n", note)
 		}
 		if err := removeBundle(ctx, funnel, app, options, &result, out); err != nil {
@@ -136,7 +136,7 @@ func bundleGone(app App, dryRun bool) bool {
 // nothing is writing to the files about to be removed. It reports what it did
 // rather than failing the uninstall, because a service that is already stopped
 // is the normal case.
-func stopServices(ctx context.Context, app App, leftovers []Leftover, dryRun bool) []string {
+func stopServices(ctx context.Context, app App, leftovers []Leftover, dryRun bool, identity *storage.CommandIdentity) []string {
 	var notes []string
 	for _, leftover := range leftovers {
 		if leftover.Kind != "launch agent" && leftover.Kind != "launch daemon" {
@@ -154,16 +154,24 @@ func stopServices(ctx context.Context, app App, leftovers []Leftover, dryRun boo
 			notes = append(notes, "left the service "+label+" running, launchctl is disabled")
 			continue
 		}
-		domain := "gui/" + fmt.Sprint(os.Getuid())
-		if leftover.Kind == "launch daemon" {
-			domain = "system"
-		}
-		if _, err := storage.CaptureCommand(ctx, launchTimeout, "/bin/launchctl", "bootout", domain+"/"+label); err == nil {
+		domain, commandIdentity := serviceDomain(leftover.Kind, identity)
+		if _, err := storage.CaptureCommandAs(ctx, launchTimeout, commandIdentity, "/bin/launchctl", "bootout", domain+"/"+label); err == nil {
 			notes = append(notes, "stopped the service "+label)
 		}
 	}
 	_ = app
 	return notes
+}
+
+func serviceDomain(kind string, identity *storage.CommandIdentity) (string, *storage.CommandIdentity) {
+	if kind == "launch daemon" {
+		return "system", nil
+	}
+	uid := uint32(os.Getuid())
+	if identity != nil {
+		uid = identity.UID
+	}
+	return "gui/" + fmt.Sprint(uid), identity
 }
 
 // launchLabel reads the service label out of the plist rather than assuming it
@@ -182,7 +190,7 @@ func launchLabel(path string) string {
 // BrewCask reports the cask token that owns this app, if any. A brew-managed
 // app has to be removed through brew, otherwise brew's own state still claims
 // it is installed.
-func BrewCask(ctx context.Context, app App) string {
+func BrewCask(ctx context.Context, app App, identity *storage.CommandIdentity) string {
 	caskroom := "/opt/homebrew/Caskroom"
 	if _, err := os.Stat(caskroom); err != nil {
 		caskroom = "/usr/local/Caskroom"
@@ -196,14 +204,14 @@ func BrewCask(ctx context.Context, app App) string {
 	}
 	target := filepath.Clean(app.Path)
 	for _, entry := range entries {
-		if caskOwnsApp(ctx, entry.Name(), target) {
+		if caskOwnsApp(ctx, entry.Name(), target, identity) {
 			return entry.Name()
 		}
 	}
 	return ""
 }
 
-func caskOwnsApp(ctx context.Context, token, target string) bool {
+func caskOwnsApp(ctx context.Context, token, target string, identity *storage.CommandIdentity) bool {
 	brew := "/opt/homebrew/bin/brew"
 	if _, err := os.Stat(brew); err != nil {
 		brew = "/usr/local/bin/brew"
@@ -211,7 +219,7 @@ func caskOwnsApp(ctx context.Context, token, target string) bool {
 			return false
 		}
 	}
-	output, err := storage.CaptureCommand(ctx, launchTimeout, brew, "list", "--cask", token)
+	output, err := storage.CaptureCommandAs(ctx, launchTimeout, identity, brew, "list", "--cask", token)
 	if err != nil {
 		return false
 	}
@@ -237,6 +245,7 @@ func BrewUninstall(ctx context.Context, funnel *safety.Funnel, token string, out
 		return nil
 	}
 	command := exec.CommandContext(ctx, brew, "uninstall", "--cask", token)
+	storage.ApplyCommandIdentity(command, funnel.Identity())
 	command.Stdout = out
 	command.Stderr = out
 	err := command.Run()

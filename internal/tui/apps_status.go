@@ -118,7 +118,7 @@ func (state *tuiState) executeApps(ctx context.Context, home string, rootful boo
 		env := uninstall.Env{Home: home, Rootful: rootful, Identity: identity}
 		for _, app := range selected {
 			fmt.Fprintf(out, "\n%s\n", app.Name)
-			if cask := uninstall.BrewCask(ctx, app); cask != "" {
+			if cask := uninstall.BrewCask(ctx, app, identity); cask != "" {
 				if err := uninstall.BrewUninstall(ctx, funnel, cask, out); err != nil {
 					fmt.Fprintf(out, "  failed: %v\n", err)
 					continue
